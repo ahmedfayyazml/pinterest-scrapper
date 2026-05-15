@@ -1,0 +1,11 @@
+{
+  "name": "pinterest-video-scraper",
+  "version": "1.0.0",
+  "description": "Pinterest video pin scraper — Node.js + Playwright + SQLite",
+  "scripts": {
+    "install:backend": "cd backend && npm install",
+    "setup:playwright": "cd backend && npx playwright install chromium",
+    "start": "cd backend && node server.js",
+    "dev": "cd backend && npx nodemon server.js"
+  }
+}

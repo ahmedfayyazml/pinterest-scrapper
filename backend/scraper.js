@@ -1,14 +1,17 @@
-const { chromium } = require("playwright");
+const { chromium } = require("playwright-extra");
+const stealth = require("puppeteer-extra-plugin-stealth")();
+
+chromium.use(stealth);
 
 // ─── HELPERS ───────────────────────────────────────────────────────────────
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const randomDelay = () => sleep(1500 + Math.random() * 1500);
+const randomDelay = () => sleep(2000 + Math.random() * 2000);
 
 const USER_AGENTS = [
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
 ];
 
 const randomUA = () => USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
@@ -23,7 +26,6 @@ async function launchBrowser() {
       "--disable-setuid-sandbox",
       "--disable-blink-features=AutomationControlled",
       "--disable-infobars",
-      "--window-size=1280,900",
     ],
   });
 }
@@ -56,11 +58,11 @@ async function newStealthPage(browser) {
 // ─── PIN EXTRACTOR ─────────────────────────────────────────────────────────
 
 async function extractVideoPins(page) {
-  await page.waitForTimeout(2000);
+  await page.waitForTimeout(3000);
 
-  // Scroll to load more pins (increased cycles to find more videos)
-  for (let i = 0; i < 10; i++) {
-    await page.evaluate(() => window.scrollBy(0, window.innerHeight * 2.5));
+  // Scroll to load more pins (increased cycles and distance)
+  for (let i = 0; i < 15; i++) {
+    await page.evaluate(() => window.scrollBy(0, window.innerHeight * 3));
     await sleep(1500 + Math.random() * 1000);
   }
 
@@ -68,15 +70,20 @@ async function extractVideoPins(page) {
     const results = [];
     const seen = new Set();
 
-    // Pinterest renders pins as <div data-test-id="pin"> or with role="listitem"
+    // broad selector to catch all pin-like elements
     const pinElements = document.querySelectorAll(
       '[data-test-id="pin"], [data-grid-item], .GrowthUnauthPinImage, div[role="listitem"], [aria-label="Pin card"]'
     );
 
     pinElements.forEach((el) => {
       try {
-        // Robust video indicators
-        const durationMatch = el.innerText.match(/^\d+:\d+$/m); // Match duration label like 0:15
+        // Robust video indicators:
+        // 1. duration label like "0:15" or "1:30"
+        // 2. video element
+        // 3. specific data attributes or classes
+        const text = el.innerText || "";
+        const hasDuration = /\d+:\d+/.test(text); 
+        
         const hasVideo =
           el.querySelector("video") ||
           el.querySelector('[data-test-id="video-pin-with-controls"]') ||
@@ -85,7 +92,7 @@ async function extractVideoPins(page) {
           el.querySelector('[aria-label*="Video" i]') ||
           el.querySelector(".PinCard--video") ||
           el.getAttribute("data-is-video") === "true" ||
-          durationMatch;
+          hasDuration;
 
         if (!hasVideo) return;
 
@@ -101,7 +108,7 @@ async function extractVideoPins(page) {
         const img = el.querySelector("img");
         const thumbnail = img?.src || img?.getAttribute("data-src") || "";
 
-        // Get video src if available
+        // Get video src if available (often not available in grid, but we try)
         const videoEl = el.querySelector("video");
         const videoSrc = videoEl?.src || videoEl?.querySelector("source")?.src || "";
 

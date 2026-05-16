@@ -220,4 +220,74 @@ async function scrapeByKeyword(keyword) {
   }
 }
 
-module.exports = { scrapeRandom, scrapeByKeyword };
+async function scrapePinDetails(pinUrl) {
+  const browser = await launchBrowser();
+  const { page, context } = await newStealthPage(browser);
+
+  try {
+    console.log(`[scraper] Fetching details for: ${pinUrl}`);
+    await page.goto(pinUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
+    await randomDelay();
+
+    // Extract video src
+    const details = await page.evaluate(() => {
+      const videoEl = document.querySelector("video");
+      const videoSrc = videoEl?.src || videoEl?.querySelector("source")?.src || "";
+      
+      const title = document.querySelector('h1, [data-test-id="pinTitle"]')?.innerText || "";
+      const description = document.querySelector('[data-test-id="pin-description-text"], .p7I')?.innerText || "";
+      const author = document.querySelector('[data-test-id="pinner-name"]')?.innerText || "";
+      
+      const viewCount = "N/A"; 
+      const uploadDate = new Date().toLocaleDateString();
+
+      // Related pins
+      const relatedResults = [];
+      const relatedSeen = new Set();
+      const pinElements = document.querySelectorAll('[data-test-id="pin"]');
+      
+      pinElements.forEach(el => {
+        try {
+          const anchor = el.querySelector("a[href*='/pin/']");
+          if (!anchor) return;
+          const url = anchor.href;
+          if (relatedSeen.has(url)) return;
+          relatedSeen.add(url);
+
+          const img = el.querySelector("img");
+          const thumb = img?.src || "";
+          const t = img?.alt || el.querySelector('[data-test-id="pin-title"]')?.innerText || "";
+
+          if (url && thumb) {
+            relatedResults.push({
+              pinUrl: url,
+              thumbnail: thumb,
+              title: t.trim(),
+              author: el.querySelector('[data-test-id="pinner-name"]')?.innerText || "",
+            });
+          }
+        } catch (e) {}
+      });
+
+      return {
+        videoSrc,
+        title,
+        description,
+        author,
+        viewCount,
+        uploadDate,
+        related: relatedResults.slice(0, 20)
+      };
+    });
+
+    return { success: true, ...details };
+  } catch (err) {
+    console.error(`[scraper] Detail fetch failed: ${err.message}`);
+    return { success: false, error: err.message };
+  } finally {
+    await context.close();
+    await browser.close();
+  }
+}
+
+module.exports = { scrapeRandom, scrapeByKeyword, scrapePinDetails };

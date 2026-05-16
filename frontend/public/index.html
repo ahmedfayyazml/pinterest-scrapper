@@ -497,11 +497,189 @@
       border-color: transparent;
     }
 
+    /* ── DETAIL VIEW ── */
+    .view { display: none; }
+    .view.active { display: block; }
+
+    .detail-container {
+      padding: 20px 40px 60px;
+      max-width: 1400px;
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: 1fr 350px;
+      gap: 32px;
+    }
+
+    .detail-main { min-width: 0; }
+
+    .back-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--muted);
+      text-decoration: none;
+      font-family: 'Syne', sans-serif;
+      font-weight: 600;
+      font-size: 0.85rem;
+      margin-bottom: 24px;
+      transition: color 0.2s;
+      cursor: pointer;
+    }
+
+    .back-link:hover { color: var(--mint); }
+
+    .player-wrap {
+      background: #000;
+      border-radius: 20px;
+      overflow: hidden;
+      aspect-ratio: 16/9;
+      margin-bottom: 24px;
+      border: 1px solid var(--border);
+      position: relative;
+    }
+
+    .player-wrap video {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    .detail-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 20px;
+      margin-bottom: 20px;
+    }
+
+    .detail-title {
+      font-family: 'Syne', sans-serif;
+      font-size: 1.5rem;
+      font-weight: 700;
+      line-height: 1.2;
+      color: var(--text);
+    }
+
+    .btn-download {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      background: linear-gradient(135deg, var(--mint), var(--cyan));
+      color: #07090F;
+      padding: 12px 24px;
+      border-radius: 12px;
+      font-family: 'Syne', sans-serif;
+      font-weight: 700;
+      font-size: 0.9rem;
+      text-decoration: none;
+      transition: all 0.2s;
+      flex-shrink: 0;
+    }
+
+    .btn-download:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 24px rgba(0,245,160,0.3);
+    }
+
+    .detail-meta {
+      display: flex;
+      gap: 20px;
+      margin-bottom: 24px;
+      padding-bottom: 24px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .meta-item {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .meta-label {
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--muted);
+      font-weight: 600;
+    }
+
+    .meta-value {
+      font-size: 0.9rem;
+      color: var(--text);
+      font-weight: 500;
+    }
+
+    .description-wrap {
+      background: var(--surface);
+      padding: 20px;
+      border-radius: 16px;
+      border: 1px solid var(--border);
+    }
+
+    .description-text {
+      font-size: 0.9rem;
+      line-height: 1.6;
+      color: var(--text);
+      white-space: pre-wrap;
+      overflow: hidden;
+      display: -webkit-box;
+      -webkit-line-clamp: 3;
+      line-clamp: 3;
+      -webkit-box-orient: vertical;
+    }
+
+    .description-text.expanded {
+      display: block;
+      -webkit-line-clamp: unset;
+      line-clamp: unset;
+    }
+
+    .toggle-desc {
+      background: none;
+      border: none;
+      color: var(--mint);
+      font-family: 'Syne', sans-serif;
+      font-weight: 600;
+      font-size: 0.8rem;
+      cursor: pointer;
+      margin-top: 10px;
+      padding: 0;
+    }
+
+    .related-section h2 {
+      font-family: 'Syne', sans-serif;
+      font-size: 1.1rem;
+      font-weight: 700;
+      margin-bottom: 20px;
+      color: var(--text);
+    }
+
+    .related-grid {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    /* Related card overrides */
+    .related-grid .card { margin-bottom: 0; }
+
     /* ── RESPONSIVE ── */
+    @media (max-width: 1024px) {
+      .detail-container { grid-template-columns: 1fr; }
+      .related-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+        gap: 14px;
+      }
+    }
+
     @media (max-width: 768px) {
-      header, .search-wrap, .status-bar, .grid-wrap, .categories-wrap { padding-left: 20px; padding-right: 20px; }
+      header, .search-wrap, .status-bar, .grid-wrap, .categories-wrap, .detail-container { padding-left: 20px; padding-right: 20px; }
       .logo { font-size: 1.2rem; }
       .grid, .skeleton-grid { columns: 2 160px; }
+      .detail-header { flex-direction: column; align-items: stretch; }
+      .btn-download { justify-content: center; }
+      .related-grid { grid-template-columns: 2 160px; }
     }
   </style>
 </head>
@@ -509,75 +687,129 @@
 
 <!-- HEADER -->
 <header>
-  <div class="logo">Pin<span>Vid</span></div>
+  <div class="logo" onclick="window.location.hash='#/'" style="cursor:pointer">Pin<span>Vid</span></div>
   <div class="header-right">
     <span class="cache-count" id="cacheCount">0 cached</span>
     <button class="btn btn-ghost" onclick="loadRandom()">↻ Refresh</button>
   </div>
 </header>
 
-<!-- SEARCH -->
-<div class="search-wrap">
-  <div class="search-label">Search Pinterest Video Pins</div>
-  <div class="search-row">
-    <input
-      class="search-input"
-      id="searchInput"
-      type="text"
-      placeholder="e.g. aesthetic room, cooking, travel vlog..."
-      autocomplete="off"
-    />
-    <button class="btn btn-primary" onclick="doSearch()">Search</button>
+<!-- HOME VIEW -->
+<div id="homeView" class="view active">
+  <!-- SEARCH -->
+  <div class="search-wrap">
+    <div class="search-label">Search Pinterest Video Pins</div>
+    <div class="search-row">
+      <input
+        class="search-input"
+        id="searchInput"
+        type="text"
+        placeholder="e.g. aesthetic room, cooking, travel vlog..."
+        autocomplete="off"
+      />
+      <button class="btn btn-primary" onclick="doSearch()">Search</button>
+    </div>
+  </div>
+
+  <!-- CATEGORIES -->
+  <div class="categories-wrap" id="categoriesWrap"></div>
+
+  <!-- STATUS BAR -->
+  <div class="status-bar">
+    <div class="status-text" id="statusText">Loading trending video pins...</div>
+    <div class="pill-tabs">
+      <button class="pill active" id="tab-live" onclick="setTab('live')">Live</button>
+      <button class="pill" id="tab-cached" onclick="setTab('cached')">Cached</button>
+    </div>
+  </div>
+
+  <!-- SKELETON -->
+  <div class="skeleton-grid show" id="skeleton">
+    <div class="skeleton-card"><div class="skeleton-thumb" style="height:260px"></div><div class="skeleton-line"></div><div class="skeleton-line short"></div></div>
+    <div class="skeleton-card"><div class="skeleton-thumb" style="height:320px"></div><div class="skeleton-line"></div><div class="skeleton-line short"></div></div>
+    <div class="skeleton-card"><div class="skeleton-thumb" style="height:200px"></div><div class="skeleton-line"></div><div class="skeleton-line short"></div></div>
+    <div class="skeleton-card"><div class="skeleton-thumb" style="height:280px"></div><div class="skeleton-line"></div><div class="skeleton-line short"></div></div>
+    <div class="skeleton-card"><div class="skeleton-thumb" style="height:310px"></div><div class="skeleton-line"></div><div class="skeleton-line short"></div></div>
+    <div class="skeleton-card"><div class="skeleton-thumb" style="height:240px"></div><div class="skeleton-line"></div><div class="skeleton-line short"></div></div>
+    <div class="skeleton-card"><div class="skeleton-thumb" style="height:290px"></div><div class="skeleton-line"></div><div class="skeleton-line short"></div></div>
+    <div class="skeleton-card"><div class="skeleton-thumb" style="height:350px"></div><div class="skeleton-line"></div><div class="skeleton-line short"></div></div>
+    <div class="skeleton-card"><div class="skeleton-thumb" style="height:220px"></div><div class="skeleton-line"></div><div class="skeleton-line short"></div></div>
+    <div class="skeleton-card"><div class="skeleton-thumb" style="height:270px"></div><div class="skeleton-line"></div><div class="skeleton-line short"></div></div>
+    <div class="skeleton-card"><div class="skeleton-thumb" style="height:300px"></div><div class="skeleton-line"></div><div class="skeleton-line short"></div></div>
+    <div class="skeleton-card"><div class="skeleton-thumb" style="height:230px"></div><div class="skeleton-line"></div><div class="skeleton-line short"></div></div>
+    <div class="skeleton-card"><div class="skeleton-thumb" style="height:260px"></div><div class="skeleton-line"></div><div class="skeleton-line short"></div></div>
+    <div class="skeleton-card"><div class="skeleton-thumb" style="height:340px"></div><div class="skeleton-line"></div><div class="skeleton-line short"></div></div>
+    <div class="skeleton-card"><div class="skeleton-thumb" style="height:210px"></div><div class="skeleton-line"></div><div class="skeleton-line short"></div></div>
+  </div>
+
+  <!-- LOADING -->
+  <div class="loading-wrap" id="loadingWrap">
+    <div class="spinner"></div>
+    <div class="loading-text" id="loadingText">SCRAPING PINTEREST...</div>
+  </div>
+
+  <!-- EMPTY -->
+  <div class="empty" id="emptyState">
+    <div class="empty-icon">📌</div>
+    <div class="empty-title">No video pins found</div>
+    <div class="empty-sub">Try a different search term or refresh</div>
+  </div>
+
+  <!-- GRID -->
+  <div class="grid-wrap" id="gridWrap" style="display:none">
+    <div class="grid" id="pinsGrid"></div>
   </div>
 </div>
 
-<!-- CATEGORIES -->
-<div class="categories-wrap" id="categoriesWrap"></div>
+<!-- DETAIL VIEW -->
+<div id="detailView" class="view">
+  <div class="detail-container">
+    <div class="detail-main">
+      <a class="back-link" onclick="window.location.hash='#/'">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+        Back to search
+      </a>
+      
+      <div id="detailPlayer" class="player-wrap">
+        <!-- Video or Skeleton -->
+      </div>
 
-<!-- STATUS BAR -->
-<div class="status-bar">
-  <div class="status-text" id="statusText">Loading trending video pins...</div>
-  <div class="pill-tabs">
-    <button class="pill active" id="tab-live" onclick="setTab('live')">Live</button>
-    <button class="pill" id="tab-cached" onclick="setTab('cached')">Cached</button>
+      <div class="detail-header">
+        <h1 id="detailTitle" class="detail-title">Loading...</h1>
+        <a id="detailDownload" class="btn-download" href="#" target="_blank">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v4M7 10l5 5 5-5M12 15V3"/></svg>
+          Download
+        </a>
+      </div>
+
+      <div class="detail-meta">
+        <div class="meta-item">
+          <span class="meta-label">Uploader</span>
+          <span id="detailAuthor" class="meta-value">...</span>
+        </div>
+        <div class="meta-item">
+          <span class="meta-label">Views</span>
+          <span id="detailViews" class="meta-value">N/A</span>
+        </div>
+        <div class="meta-item">
+          <span class="meta-label">Date</span>
+          <span id="detailDate" class="meta-value">...</span>
+        </div>
+      </div>
+
+      <div class="description-wrap">
+        <div id="detailDescription" class="description-text">...</div>
+        <button id="toggleDesc" class="toggle-desc" onclick="toggleDescription()">Show more</button>
+      </div>
+    </div>
+
+    <aside class="related-section">
+      <h2>Related Videos</h2>
+      <div id="relatedGrid" class="related-grid">
+        <!-- Related cards -->
+      </div>
+    </aside>
   </div>
-</div>
-
-<!-- SKELETON -->
-<div class="skeleton-grid show" id="skeleton">
-  <div class="skeleton-card"><div class="skeleton-thumb" style="height:260px"></div><div class="skeleton-line"></div><div class="skeleton-line short"></div></div>
-  <div class="skeleton-card"><div class="skeleton-thumb" style="height:320px"></div><div class="skeleton-line"></div><div class="skeleton-line short"></div></div>
-  <div class="skeleton-card"><div class="skeleton-thumb" style="height:200px"></div><div class="skeleton-line"></div><div class="skeleton-line short"></div></div>
-  <div class="skeleton-card"><div class="skeleton-thumb" style="height:280px"></div><div class="skeleton-line"></div><div class="skeleton-line short"></div></div>
-  <div class="skeleton-card"><div class="skeleton-thumb" style="height:310px"></div><div class="skeleton-line"></div><div class="skeleton-line short"></div></div>
-  <div class="skeleton-card"><div class="skeleton-thumb" style="height:240px"></div><div class="skeleton-line"></div><div class="skeleton-line short"></div></div>
-  <div class="skeleton-card"><div class="skeleton-thumb" style="height:290px"></div><div class="skeleton-line"></div><div class="skeleton-line short"></div></div>
-  <div class="skeleton-card"><div class="skeleton-thumb" style="height:350px"></div><div class="skeleton-line"></div><div class="skeleton-line short"></div></div>
-  <div class="skeleton-card"><div class="skeleton-thumb" style="height:220px"></div><div class="skeleton-line"></div><div class="skeleton-line short"></div></div>
-  <div class="skeleton-card"><div class="skeleton-thumb" style="height:270px"></div><div class="skeleton-line"></div><div class="skeleton-line short"></div></div>
-  <div class="skeleton-card"><div class="skeleton-thumb" style="height:300px"></div><div class="skeleton-line"></div><div class="skeleton-line short"></div></div>
-  <div class="skeleton-card"><div class="skeleton-thumb" style="height:230px"></div><div class="skeleton-line"></div><div class="skeleton-line short"></div></div>
-  <div class="skeleton-card"><div class="skeleton-thumb" style="height:260px"></div><div class="skeleton-line"></div><div class="skeleton-line short"></div></div>
-  <div class="skeleton-card"><div class="skeleton-thumb" style="height:340px"></div><div class="skeleton-line"></div><div class="skeleton-line short"></div></div>
-  <div class="skeleton-card"><div class="skeleton-thumb" style="height:210px"></div><div class="skeleton-line"></div><div class="skeleton-line short"></div></div>
-</div>
-
-<!-- LOADING -->
-<div class="loading-wrap" id="loadingWrap">
-  <div class="spinner"></div>
-  <div class="loading-text" id="loadingText">SCRAPING PINTEREST...</div>
-</div>
-
-<!-- EMPTY -->
-<div class="empty" id="emptyState">
-  <div class="empty-icon">📌</div>
-  <div class="empty-title">No video pins found</div>
-  <div class="empty-sub">Try a different search term or refresh</div>
-</div>
-
-<!-- GRID -->
-<div class="grid-wrap" id="gridWrap" style="display:none">
-  <div class="grid" id="pinsGrid"></div>
 </div>
 
 <!-- TOAST -->
@@ -649,7 +881,6 @@
 
   function renderCategories() {
     const wrap = document.getElementById('categoriesWrap');
-    // Pick 15 random categories from the pool
     const shuffled = [...CATEGORIES].sort(() => 0.5 - Math.random());
     const selected = shuffled.slice(0, 15);
     
@@ -660,11 +891,8 @@
 
   function handleCategoryClick(el, cat) {
     document.getElementById('searchInput').value = cat;
-    
-    // Highlight active pill
     document.querySelectorAll('.cat-pill').forEach(p => p.classList.remove('active'));
-    el.classList.add('active');
-    
+    el?.classList.add('active');
     doSearch();
   }
 
@@ -674,6 +902,10 @@
     const div = document.createElement('div');
     div.className = 'card';
     div.style.animationDelay = `${delay}ms`;
+    
+    // Encoded URL as ID for hashing
+    const encodedUrl = btoa(pin.pinUrl).replace(/=/g, '');
+    div.onclick = () => window.location.hash = `#/video/${encodedUrl}`;
 
     const title = pin.title || 'Pinterest Video Pin';
     const author = pin.author ? `@${pin.author}` : 'Pinterest';
@@ -688,21 +920,19 @@
         <div class="card-title">${title || 'Untitled Pin'}</div>
         <div class="card-meta">
           <span class="card-author">${author}</span>
-          <a class="card-link" href="${pin.pinUrl}" target="_blank" rel="noopener">
-            View ↗
-          </a>
+          <span class="card-link">View Details ↗</span>
         </div>
       </div>
     `;
     return div;
   }
 
-  function renderPins(pins, append = false) {
-    const grid = document.getElementById('pinsGrid');
+  function renderPins(pins, append = false, targetGridId = 'pinsGrid') {
+    const grid = document.getElementById(targetGridId);
     if (!append) grid.innerHTML = '';
     
     if (!pins || pins.length === 0) { 
-      if (!append) showEmpty(); 
+      if (!append && targetGridId === 'pinsGrid') showEmpty(); 
       return; 
     }
 
@@ -710,14 +940,14 @@
       grid.appendChild(buildCard(pin, i * 30));
     });
 
-    showGrid();
+    if (targetGridId === 'pinsGrid') showGrid();
   }
 
   // ── INFINITE SCROLL ─────────────────────────────────────────────────────
 
   let isLoadingMore = false;
   window.addEventListener('scroll', () => {
-    if (isLoadingMore || currentTab === 'cached') return;
+    if (isLoadingMore || currentTab === 'cached' || window.location.hash.includes('/video/')) return;
     
     const { scrollTop, scrollHeight, clientHeight } = document.documentElement;
     if (scrollTop + clientHeight >= scrollHeight - 800) {
@@ -728,8 +958,6 @@
   async function loadMore() {
     if (isLoadingMore) return;
     isLoadingMore = true;
-    
-    // Show a small loader at bottom or just toast
     toast('Loading more pins...', 'info');
     
     try {
@@ -750,9 +978,94 @@
     }
   }
 
+  // ── DETAIL VIEW LOGIC ──────────────────────────────────────────────────
+
+  function toggleDescription() {
+    const el = document.getElementById('detailDescription');
+    const btn = document.getElementById('toggleDesc');
+    const isExpanded = el.classList.toggle('expanded');
+    btn.textContent = isExpanded ? 'Show less' : 'Show more';
+  }
+
+  async function loadVideoDetails(encodedUrl) {
+    const pinUrl = atob(encodedUrl);
+    const detailView = document.getElementById('detailView');
+    const playerWrap = document.getElementById('detailPlayer');
+    
+    // Reset View
+    playerWrap.innerHTML = '<div class="spinner" style="margin-top:20% !important"></div>';
+    document.getElementById('detailTitle').textContent = 'Loading...';
+    document.getElementById('detailAuthor').textContent = '...';
+    document.getElementById('detailDescription').textContent = '...';
+    document.getElementById('relatedGrid').innerHTML = '';
+    window.scrollTo(0, 0);
+
+    try {
+      const res = await fetch(`${API}/pins/details?url=${encodeURIComponent(pinUrl)}`);
+      const data = await res.json();
+      
+      if (!data.success) throw new Error(data.error);
+
+      // Render Player
+      if (data.videoSrc) {
+        playerWrap.innerHTML = `
+          <video src="${data.videoSrc}" controls autoplay loop playsinline poster="${data.thumbnail || ''}"></video>
+        `;
+        document.getElementById('detailDownload').href = data.videoSrc;
+        document.getElementById('detailDownload').style.display = 'flex';
+      } else {
+        playerWrap.innerHTML = `
+          <div style="height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:16px; padding:20px; text-align:center">
+            <span style="font-size:3rem">⚠️</span>
+            <p style="color:var(--muted)">Direct video playback restricted by Pinterest.</p>
+            <a href="${pinUrl}" target="_blank" class="btn btn-ghost">View on Pinterest</a>
+          </div>
+        `;
+        document.getElementById('detailDownload').href = pinUrl;
+      }
+
+      // Metadata
+      document.getElementById('detailTitle').textContent = data.title || 'Pinterest Video';
+      document.getElementById('detailAuthor').textContent = data.author || 'Pinterest User';
+      document.getElementById('detailViews').textContent = data.viewCount || 'N/A';
+      document.getElementById('detailDate').textContent = data.uploadDate || 'Recently';
+      document.getElementById('detailDescription').textContent = data.description || 'No description available.';
+      
+      // Related
+      renderPins(data.related, false, 'relatedGrid');
+      
+      toast('Video details loaded');
+    } catch (err) {
+      console.error(err);
+      toast('Failed to load video details', 'error');
+      document.getElementById('detailTitle').textContent = 'Error loading video';
+    }
+  }
+
+  // ── ROUTER ─────────────────────────────────────────────────────────────
+
+  function router() {
+    const hash = window.location.hash || '#/';
+    const homeView = document.getElementById('homeView');
+    const detailView = document.getElementById('detailView');
+
+    if (hash === '#/') {
+      homeView.classList.add('active');
+      detailView.classList.remove('active');
+    } else if (hash.startsWith('#/video/')) {
+      const id = hash.replace('#/video/', '');
+      homeView.classList.remove('active');
+      detailView.classList.add('active');
+      loadVideoDetails(id);
+    }
+  }
+
+  window.addEventListener('hashchange', router);
+
   // ── API CALLS ───────────────────────────────────────────────────────────
 
   async function loadRandom() {
+    if (window.location.hash !== '#/') return;
     showSkeleton();
     setStatus('Scraping trending video pins...');
     try {
@@ -821,7 +1134,6 @@
 
   document.getElementById('searchInput').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
-      // Clear active category highlight on manual search
       document.querySelectorAll('.cat-pill').forEach(p => p.classList.remove('active'));
       doSearch();
     }
@@ -829,7 +1141,10 @@
 
   // ── INIT ────────────────────────────────────────────────────────────────
   renderCategories();
-  loadRandom();
+  router(); // Initial route check
+  if (window.location.hash === '#/' || !window.location.hash) {
+    loadRandom();
+  }
   updateCacheCount();
 </script>
 </body>

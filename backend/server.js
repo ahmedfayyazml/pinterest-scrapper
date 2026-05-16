@@ -1,7 +1,7 @@
 const express = require("express");
 const cors = require("cors");
 const path = require("path");
-const { scrapeRandom, scrapeByKeyword } = require("./scraper");
+const { scrapeRandom, scrapeByKeyword, scrapePinDetails } = require("./scraper");
 const db = require("./db");
 
 const app = express();
@@ -60,6 +60,33 @@ app.get("/api/pins/search", async (req, res) => {
     res.json({ success: true, count: merged.length, query, pins: merged });
   } catch (err) {
     console.error("[/api/pins/search] Error:", err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// GET /api/pins/details?url=pinUrl
+app.get("/api/pins/details", async (req, res) => {
+  const pinUrl = req.query.url;
+  if (!pinUrl) return res.status(400).json({ success: false, error: "Missing ?url= parameter" });
+
+  try {
+    // Check cache first
+    const cached = db.getAllPins().find(p => p.pinUrl === pinUrl);
+    
+    // We scrape live for video source as it might be missing in grid cache
+    const details = await scrapePinDetails(pinUrl);
+    
+    if (details.success) {
+      // Update cache with video source if found
+      if (details.videoSrc && cached) {
+        cached.videoSrc = details.videoSrc;
+        db.upsertPin(cached);
+      }
+      res.json(details);
+    } else {
+      res.status(500).json(details);
+    }
+  } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
 });

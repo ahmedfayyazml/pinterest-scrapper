@@ -352,6 +352,7 @@
       line-height: 1.4;
       display: -webkit-box;
       -webkit-line-clamp: 2;
+      line-clamp: 2;
       -webkit-box-orient: vertical;
       overflow: hidden;
       margin-bottom: 8px;
@@ -453,9 +454,52 @@
     .toast.success { border-color: var(--mint); }
     .toast.error { border-color: var(--red); }
 
+    /* ── CATEGORIES ── */
+    .categories-wrap {
+      padding: 16px 40px 0;
+      display: flex;
+      gap: 10px;
+      overflow-x: auto;
+      scrollbar-width: none;
+      -ms-overflow-style: none;
+      max-width: 100%;
+    }
+
+    .categories-wrap::-webkit-scrollbar {
+      display: none;
+    }
+
+    .cat-pill {
+      font-family: 'Syne', sans-serif;
+      font-size: 0.75rem;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      padding: 8px 16px;
+      border-radius: 20px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--muted);
+      cursor: pointer;
+      transition: all 0.2s;
+      white-space: nowrap;
+    }
+
+    .cat-pill:hover {
+      border-color: var(--mint);
+      color: var(--mint);
+      background: rgba(0,245,160,0.06);
+      transform: translateY(-1px);
+    }
+
+    .cat-pill.active {
+      background: linear-gradient(135deg, var(--mint), var(--cyan));
+      color: #07090F;
+      border-color: transparent;
+    }
+
     /* ── RESPONSIVE ── */
     @media (max-width: 768px) {
-      header, .search-wrap, .status-bar, .grid-wrap { padding-left: 20px; padding-right: 20px; }
+      header, .search-wrap, .status-bar, .grid-wrap, .categories-wrap { padding-left: 20px; padding-right: 20px; }
       .logo { font-size: 1.2rem; }
       .grid, .skeleton-grid { columns: 2 160px; }
     }
@@ -486,6 +530,9 @@
     <button class="btn btn-primary" onclick="doSearch()">Search</button>
   </div>
 </div>
+
+<!-- CATEGORIES -->
+<div class="categories-wrap" id="categoriesWrap"></div>
 
 <!-- STATUS BAR -->
 <div class="status-bar">
@@ -540,6 +587,14 @@
   const API = 'http://localhost:3001/api';
   let currentTab = 'live';
 
+  const CATEGORIES = [
+    "Aesthetic Room", "Healthy Recipes", "Travel Vlog", "Digital Art", 
+    "Street Style", "Nature Photography", "Tech Gadgets", "Workout Tips", 
+    "DIY Crafts", "Space Exploration", "Retro Vibes", "Urban Architecture", 
+    "Cozy Coffee", "Futuristic Tech", "Gaming Setup", "Minimalist Living",
+    "Skincare Routine", "Home Office", "Calisthenics", "Lo-fi Beats"
+  ];
+
   // ── UTILS ──────────────────────────────────────────────────────────────
 
   function toast(msg, type = 'success') {
@@ -588,6 +643,29 @@
     document.getElementById('loadingWrap').classList.remove('show');
     document.getElementById('emptyState').classList.remove('show');
     document.getElementById('gridWrap').style.display = 'block';
+  }
+
+  // ── CATEGORIES ─────────────────────────────────────────────────────────
+
+  function renderCategories() {
+    const wrap = document.getElementById('categoriesWrap');
+    // Pick 15 random categories from the pool
+    const shuffled = [...CATEGORIES].sort(() => 0.5 - Math.random());
+    const selected = shuffled.slice(0, 15);
+    
+    wrap.innerHTML = selected.map(cat => `
+      <button class="cat-pill" onclick="handleCategoryClick(this, '${cat}')">${cat}</button>
+    `).join('');
+  }
+
+  function handleCategoryClick(el, cat) {
+    document.getElementById('searchInput').value = cat;
+    
+    // Highlight active pill
+    document.querySelectorAll('.cat-pill').forEach(p => p.classList.remove('active'));
+    el.classList.add('active');
+    
+    doSearch();
   }
 
   // ── CARD BUILDER ────────────────────────────────────────────────────────
@@ -742,10 +820,15 @@
   // ── KEYBOARD SHORTCUT ───────────────────────────────────────────────────
 
   document.getElementById('searchInput').addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') doSearch();
+    if (e.key === 'Enter') {
+      // Clear active category highlight on manual search
+      document.querySelectorAll('.cat-pill').forEach(p => p.classList.remove('active'));
+      doSearch();
+    }
   });
 
   // ── INIT ────────────────────────────────────────────────────────────────
+  renderCategories();
   loadRandom();
   updateCacheCount();
 </script>

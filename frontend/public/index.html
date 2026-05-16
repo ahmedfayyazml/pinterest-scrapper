@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>PinVid — Pinterest Video Scraper</title>
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet" />
   <style>
@@ -503,11 +504,11 @@
 
     .detail-container {
       padding: 20px 40px 60px;
-      max-width: 1400px;
+      max-width: 1000px;
       margin: 0 auto;
-      display: grid;
-      grid-template-columns: 1fr 350px;
-      gap: 32px;
+      display: flex;
+      flex-direction: column;
+      gap: 40px;
     }
 
     .detail-main { min-width: 0; }
@@ -646,31 +647,39 @@
       padding: 0;
     }
 
-    .related-section h2 {
-      font-family: 'Syne', sans-serif;
-      font-size: 1.1rem;
-      font-weight: 700;
-      margin-bottom: 20px;
-      color: var(--text);
+    /* ── RELATED SECTION ── */
+    .related-section {
+      border-top: 1px solid var(--border);
+      padding-top: 40px;
+      margin-top: 40px;
     }
 
-    .related-grid {
+    .related-section h2 {
+      font-family: 'Syne', sans-serif;
+      font-size: 1.4rem;
+      font-weight: 700;
+      color: var(--text);
+      margin-bottom: 30px;
       display: flex;
-      flex-direction: column;
+      align-items: center;
       gap: 16px;
     }
 
-    /* Related card overrides */
-    .related-grid .card { margin-bottom: 0; }
+    .related-section h2::after {
+      content: "";
+      height: 1px;
+      flex: 1;
+      background: var(--border);
+    }
 
-    /* ── RESPONSIVE ── */
-    @media (max-width: 1024px) {
-      .detail-container { grid-template-columns: 1fr; }
-      .related-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-        gap: 14px;
-      }
+    .related-grid {
+      columns: 4 220px;
+      column-gap: 20px;
+    }
+
+    .related-grid .card {
+      margin-bottom: 20px;
+      break-inside: avoid;
     }
 
     @media (max-width: 768px) {
@@ -679,8 +688,67 @@
       .grid, .skeleton-grid { columns: 2 160px; }
       .detail-header { flex-direction: column; align-items: stretch; }
       .btn-download { justify-content: center; }
-      .related-grid { grid-template-columns: 2 160px; }
+      .related-grid { columns: 2 160px; }
     }
+
+    /* ── DOWNLOAD MODAL ── */
+    .modal-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0, 0, 0, 0.85);
+      backdrop-filter: blur(8px);
+      z-index: 2000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      opacity: 0;
+      visibility: hidden;
+      transition: all 0.3s ease;
+    }
+    .modal-overlay.active { opacity: 1; visibility: visible; }
+    .modal-card {
+      background: #0f172a;
+      border: 1px solid var(--border);
+      border-radius: 24px;
+      width: 480px;
+      max-width: 90%;
+      padding: 32px;
+      position: relative;
+      transform: scale(0.9);
+      transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+      box-shadow: 0 25px 60px rgba(0,0,0,0.6);
+    }
+    .modal-overlay.active .modal-card { transform: scale(1); }
+    .modal-close {
+      position: absolute; top: 24px; right: 24px;
+      background: none; border: none; color: var(--text-dim);
+      cursor: pointer; padding: 5px; transition: color 0.2s;
+    }
+    .modal-close:hover { color: var(--text); }
+    .modal-title { font-family: 'Syne', sans-serif; font-size: 1.6rem; font-weight: 700; margin-bottom: 8px; }
+    .modal-subtitle { color: var(--text-dim); font-size: 0.9rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 30px; }
+    .modal-state { display: none; }
+    .modal-state.active { display: block; }
+    .quality-list { display: flex; flex-direction: column; gap: 12px; margin-bottom: 24px; max-height: 320px; overflow-y: auto; padding-right: 6px; }
+    .quality-item {
+      background: rgba(255, 255, 255, 0.03); border: 1px solid var(--border);
+      border-radius: 14px; padding: 16px 20px; display: flex; align-items: center;
+      justify-content: space-between; cursor: pointer; transition: all 0.2s;
+    }
+    .quality-item:hover { background: rgba(255, 255, 255, 0.08); border-color: var(--mint); }
+    .quality-item.selected { background: rgba(0, 255, 204, 0.1); border-color: var(--mint); box-shadow: 0 0 20px rgba(0, 255, 204, 0.1); }
+    .quality-info { display: flex; align-items: center; gap: 14px; }
+    .quality-icon { font-size: 1.25rem; }
+    .quality-label { font-weight: 600; }
+    .quality-size { color: var(--text-dim); font-size: 0.85rem; }
+    .progress-bar-bg { height: 10px; background: rgba(255,255,255,0.05); border-radius: 20px; margin: 24px 0; overflow: hidden; }
+    .progress-bar-fill { height: 100%; background: var(--mint-gradient); width: 0%; transition: width 0.3s ease; }
+    .success-icon { font-size: 3rem; margin-bottom: 16px; display: block; text-align: center; }
+    .btn-download-now { width: 100%; padding: 18px; border-radius: 14px; font-weight: 700; text-transform: uppercase; letter-spacing: 1.5px; margin-top: 10px; }
+    .btn-download-now:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
   </style>
 </head>
 <body>
@@ -776,10 +844,10 @@
 
       <div class="detail-header">
         <h1 id="detailTitle" class="detail-title">Loading...</h1>
-        <a id="detailDownload" class="btn-download" href="#" target="_blank">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v4M7 10l5 5 5-5M12 15V3"/></svg>
+        <button id="detailDownload" class="btn-download" onclick="openDownloadModal()">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
           Download
-        </a>
+        </button>
       </div>
 
       <div class="detail-meta">
@@ -801,14 +869,64 @@
         <div id="detailDescription" class="description-text">...</div>
         <button id="toggleDesc" class="toggle-desc" onclick="toggleDescription()">Show more</button>
       </div>
+
+      <section class="related-section">
+        <h2>More Videos You Might Like</h2>
+        <div id="relatedGrid" class="related-grid">
+          <!-- Related cards -->
+        </div>
+      </section>
+    </div>
+  </div>
+</div>
+
+<!-- DOWNLOAD MODAL -->
+<div class="modal-overlay" id="downloadModal" onclick="handleBackdropClick(event)">
+  <div class="modal-card">
+    <button class="modal-close" onclick="closeDownloadModal()">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+    </button>
+    <div class="modal-title">Download Video</div>
+    <div class="modal-subtitle" id="modalVideoTitle">Loading...</div>
+
+    <!-- STATE 1: LOADING -->
+    <div id="modalStateLoading" class="modal-state active">
+      <div style="text-align:center; padding: 40px 0;">
+        <div class="spinner" style="margin-bottom: 20px;"></div>
+        <div style="color: var(--text-dim)">Fetching available qualities...</div>
+      </div>
     </div>
 
-    <aside class="related-section">
-      <h2>Related Videos</h2>
-      <div id="relatedGrid" class="related-grid">
-        <!-- Related cards -->
+    <!-- STATE 2: SELECTION -->
+    <div id="modalStateSelect" class="modal-state">
+      <div class="quality-list" id="qualityList">
+        <!-- Quality items -->
       </div>
-    </aside>
+      <button id="btnDownloadNow" class="btn btn-primary btn-download-now" disabled onclick="startDownload()">
+        Download Now
+      </button>
+    </div>
+
+    <!-- STATE 3: DOWNLOADING -->
+    <div id="modalStateDownloading" class="modal-state">
+      <div style="text-align:center; padding: 20px 0;">
+        <div style="font-weight: 600; margin-bottom: 10px;">Downloading... please wait</div>
+        <div style="font-size: 0.85rem; color: var(--text-dim)">Your file is being prepared</div>
+        <div class="progress-bar-bg">
+          <div class="progress-bar-fill" id="downloadProgress"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- STATE 4: SUCCESS/ERROR -->
+    <div id="modalStateResult" class="modal-state">
+      <div style="text-align:center; padding: 20px 0;">
+        <span id="resultIcon" class="success-icon">✅</span>
+        <div id="resultTitle" style="font-weight: 700; font-size: 1.2rem; margin-bottom: 8px;">Success!</div>
+        <div id="resultMsg" style="color: var(--text-dim); margin-bottom: 30px;">Your download has finished.</div>
+        <button class="btn btn-primary" style="width: 100%" onclick="closeDownloadModal()">Close</button>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -818,6 +936,8 @@
 <script>
   const API = 'http://localhost:3001/api';
   let currentTab = 'live';
+  let activeSearchQuery = '';
+  let nextBookmark = '';
 
   const CATEGORIES = [
     "Aesthetic Room", "Healthy Recipes", "Travel Vlog", "Digital Art", 
@@ -890,9 +1010,10 @@
   }
 
   function handleCategoryClick(el, cat) {
-    document.getElementById('searchInput').value = cat;
     document.querySelectorAll('.cat-pill').forEach(p => p.classList.remove('active'));
-    el?.classList.add('active');
+    el.classList.add('active');
+    document.getElementById('searchInput').value = cat;
+    activeSearchQuery = cat;
     doSearch();
   }
 
@@ -903,12 +1024,14 @@
     div.className = 'card';
     div.style.animationDelay = `${delay}ms`;
     
-    // Encoded URL as ID for hashing
-    const encodedUrl = btoa(pin.pinUrl).replace(/=/g, '');
-    div.onclick = () => window.location.hash = `#/video/${encodedUrl}`;
+    const pinUrl = pin.pinUrl || `https://www.pinterest.com/pin/${pin.id}/`;
+    const encodedUrl = encodeURIComponent(pinUrl);
+    div.onclick = () => {
+      window.location.hash = `#/video/${encodedUrl}`;
+    };
 
     const title = pin.title || 'Pinterest Video Pin';
-    const author = pin.author ? `@${pin.author}` : 'Pinterest';
+    const author = pin.uploader || pin.author || 'Pinterest';
     const thumb = pin.thumbnail || 'https://via.placeholder.com/220x300/0d1119/5a6480?text=No+Image';
 
     div.innerHTML = `
@@ -917,9 +1040,9 @@
         <div class="play-badge"><div class="play-icon"></div>VIDEO</div>
       </div>
       <div class="card-body">
-        <div class="card-title">${title || 'Untitled Pin'}</div>
+        <div class="card-title">${title}</div>
         <div class="card-meta">
-          <span class="card-author">${author}</span>
+          <span class="card-author">@${author}</span>
           <span class="card-link">View Details ↗</span>
         </div>
       </div>
@@ -956,20 +1079,20 @@
   });
 
   async function loadMore() {
-    if (isLoadingMore) return;
+    if (isLoadingMore || !nextBookmark) return;
     isLoadingMore = true;
-    toast('Loading more pins...', 'info');
+    toast('Loading more...', 'info');
     
     try {
-      const q = document.getElementById('searchInput').value.trim();
-      let url = q ? `${API}/pins/search?q=${encodeURIComponent(q)}` : `${API}/pins/random`;
+      let url = `${API}/pinterest/feed?page=${encodeURIComponent(nextBookmark)}`;
+      if (activeSearchQuery) url += `&query=${encodeURIComponent(activeSearchQuery)}`;
       
       const res = await fetch(url);
       const data = await res.json();
       
       if (data.success && data.pins.length > 0) {
+        nextBookmark = data.bookmark;
         renderPins(data.pins, true);
-        updateCacheCount();
       }
     } catch (err) {
       console.error('Failed to load more:', err);
@@ -987,8 +1110,14 @@
     btn.textContent = isExpanded ? 'Show less' : 'Show more';
   }
 
-  async function loadVideoDetails(encodedUrl) {
-    const pinUrl = atob(encodedUrl);
+  async function loadVideoDetails(id) {
+    let pinUrl;
+    try {
+      pinUrl = decodeURIComponent(id);
+    } catch (e) {
+      // Fallback for old btoa links if any
+      try { pinUrl = atob(id); } catch(err) { pinUrl = id; }
+    }
     const detailView = document.getElementById('detailView');
     const playerWrap = document.getElementById('detailPlayer');
     
@@ -1001,17 +1130,23 @@
     window.scrollTo(0, 0);
 
     try {
-      const res = await fetch(`${API}/pins/details?url=${encodeURIComponent(pinUrl)}`);
+      const res = await fetch(`${API}/pins/details?url=${encodeURIComponent(pinUrl)}&q=${encodeURIComponent(activeSearchQuery)}`);
       const data = await res.json();
       
       if (!data.success) throw new Error(data.error);
 
       // Render Player
       if (data.videoSrc) {
-        playerWrap.innerHTML = `
-          <video src="${data.videoSrc}" controls autoplay loop playsinline poster="${data.thumbnail || ''}"></video>
-        `;
-        document.getElementById('detailDownload').href = data.videoSrc;
+        if (data.videoSrc.includes('.m3u8') && Hls.isSupported()) {
+          playerWrap.innerHTML = `<video id="hlsVideo" controls autoplay loop playsinline poster="${data.thumbnail || ''}" style="width:100%"></video>`;
+          const hls = new Hls();
+          hls.loadSource(data.videoSrc);
+          hls.attachMedia(document.getElementById('hlsVideo'));
+        } else {
+          playerWrap.innerHTML = `
+            <video src="${data.videoSrc}" controls autoplay loop playsinline poster="${data.thumbnail || ''}"></video>
+          `;
+        }
         document.getElementById('detailDownload').style.display = 'flex';
       } else {
         playerWrap.innerHTML = `
@@ -1021,13 +1156,21 @@
             <a href="${pinUrl}" target="_blank" class="btn btn-ghost">View on Pinterest</a>
           </div>
         `;
-        document.getElementById('detailDownload').href = pinUrl;
+        document.getElementById('detailDownload').style.display = 'none';
       }
 
       // Metadata
       document.getElementById('detailTitle').textContent = data.title || 'Pinterest Video';
       document.getElementById('detailAuthor').textContent = data.author || 'Pinterest User';
-      document.getElementById('detailViews').textContent = data.viewCount || 'N/A';
+      
+      const viewsEl = document.getElementById('detailViews');
+      if (data.viewCount && data.viewCount !== 'N/A') {
+        viewsEl.textContent = data.viewCount.toLocaleString();
+        viewsEl.parentElement.style.display = 'inline';
+      } else {
+        viewsEl.parentElement.style.display = 'none';
+      }
+
       document.getElementById('detailDate').textContent = data.uploadDate || 'Recently';
       document.getElementById('detailDescription').textContent = data.description || 'No description available.';
       
@@ -1065,22 +1208,29 @@
   // ── API CALLS ───────────────────────────────────────────────────────────
 
   async function loadRandom() {
-    if (window.location.hash !== '#/') return;
+    const hash = window.location.hash;
+    if (hash && hash !== '#/') return;
+    activeSearchQuery = '';
+    nextBookmark = '';
     showSkeleton();
-    setStatus('Scraping trending video pins...');
+    setStatus('🌐 Scraping live from Pinterest...');
     try {
-      const res = await fetch(`${API}/pins/random`);
+      const res = await fetch(`${API}/pinterest/feed`);
       const data = await res.json();
-      if (!data.success) throw new Error(data.error);
+      if (!data.success) throw new Error(data.error || 'Feed failed');
 
-      renderPins(data.pins);
-      setStatus(`Found <strong>${data.count}</strong> video pins — trending`);
-      updateCacheCount();
-      toast(`✓ Loaded ${data.count} video pins`);
+      if (data.pins && data.pins.length > 0) {
+        nextBookmark = data.bookmark;
+        renderPins(data.pins);
+        setStatus(`Showing <strong>${data.count}</strong> video pins`);
+        updateCacheCount();
+      } else {
+        showEmpty();
+        setStatus('No video pins found — try searching for something specific');
+      }
     } catch (err) {
       showEmpty();
-      setStatus('Failed to scrape Pinterest');
-      toast(`Error: ${err.message}`, 'error');
+      setStatus('Failed to load feed');
       console.error(err);
     }
   }
@@ -1088,23 +1238,32 @@
   async function doSearch() {
     const q = document.getElementById('searchInput').value.trim();
     if (!q) { toast('Enter a search term first', 'error'); return; }
-
-    showLoading(`SEARCHING "${q.toUpperCase()}"...`);
+    activeSearchQuery = q;
+    nextBookmark = '';
+    
+    showSkeleton();
     setStatus(`Searching for "<strong>${q}</strong>"...`);
 
     try {
-      const res = await fetch(`${API}/pins/search?q=${encodeURIComponent(q)}`);
+      const res = await fetch(`${API}/pinterest/feed?query=${encodeURIComponent(q)}`);
       const data = await res.json();
       if (!data.success) throw new Error(data.error);
 
-      renderPins(data.pins);
-      setStatus(`<strong>${data.count}</strong> video pins for "<strong>${q}</strong>" — live + cached`);
-      updateCacheCount();
-      toast(`✓ ${data.count} results for "${q}"`);
+      if (data.pins && data.pins.length > 0) {
+        nextBookmark = data.bookmark;
+        renderPins(data.pins);
+        const isCache = data.pins[0]?.source === 'cache';
+        setStatus(isCache
+          ? `Showing cached results for "<strong>${q}</strong>" — fetching fresh...`
+          : `<strong>${data.count}</strong> results for "<strong>${q}</strong>"`);
+        updateCacheCount();
+      } else {
+        showEmpty();
+        setStatus(`No results for "<strong>${q}</strong>" yet — try again in a moment`);
+      }
     } catch (err) {
       showEmpty();
       setStatus('Search failed');
-      toast(`Error: ${err.message}`, 'error');
     }
   }
 
@@ -1127,8 +1286,153 @@
       const res = await fetch(`${API}/pins/cached`);
       const data = await res.json();
       document.getElementById('cacheCount').textContent = `${data.count} cached`;
-    } catch {}
+    } catch (e) {}
   }
+
+  // ── DOWNLOAD MODAL LOGIC ───────────────────────────────────────────────
+  
+  let currentVideoUrl = '';
+  let selectedQuality = null;
+  let isDownloading = false;
+
+  function openDownloadModal() {
+    const title = document.getElementById('detailTitle').textContent;
+    document.getElementById('modalVideoTitle').textContent = title;
+    document.getElementById('downloadModal').classList.add('active');
+    
+    // Reset states
+    showModalState('Loading');
+    selectedQuality = null;
+    document.getElementById('btnDownloadNow').disabled = true;
+    
+    fetchQualities();
+  }
+
+  function closeDownloadModal() {
+    if (isDownloading) {
+      if (!confirm('Download in progress. Are you sure you want to cancel?')) return;
+    }
+    document.getElementById('downloadModal').classList.remove('active');
+    isDownloading = false;
+  }
+
+  function handleBackdropClick(e) {
+    if (e.target.id === 'downloadModal') closeDownloadModal();
+  }
+
+  function showModalState(state) {
+    const states = ['Loading', 'Select', 'Downloading', 'Result'];
+    states.forEach(s => {
+      document.getElementById(`modalState${s}`).classList.toggle('active', s === state);
+    });
+  }
+
+  async function fetchQualities() {
+    try {
+      const res = await fetch(`${API}/info`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: currentVideoUrl })
+      });
+      const data = await res.json();
+      
+      if (!data.success) throw new Error(data.error);
+
+      renderQualities(data.formats);
+      showModalState('Select');
+    } catch (err) {
+      showModalResult('❌', 'Error', err.message || 'Failed to fetch qualities');
+    }
+  }
+
+  function renderQualities(formats) {
+    const list = document.getElementById('qualityList');
+    list.innerHTML = formats.map(f => {
+      let icon = '📺';
+      if (f.quality.includes('Best')) icon = '🎬';
+      if (f.quality.includes('Audio')) icon = '🎵';
+      
+      return `
+        <div class="quality-item" onclick="selectQuality(this, '${f.format_id}')">
+          <div class="quality-info">
+            <span class="quality-icon">${icon}</span>
+            <div style="display:flex; flex-direction:column">
+              <span class="quality-label">${f.label}</span>
+              <span class="quality-size">${f.filesize || 'Unknown size'}</span>
+            </div>
+          </div>
+        </div>
+      `;
+    }).join('');
+  }
+
+  function selectQuality(el, formatId) {
+    document.querySelectorAll('.quality-item').forEach(i => i.classList.remove('selected'));
+    el.classList.add('selected');
+    selectedQuality = formatId;
+    document.getElementById('btnDownloadNow').disabled = false;
+  }
+
+  async function startDownload() {
+    if (!selectedQuality) return;
+    isDownloading = true;
+    showModalState('Downloading');
+    
+    const bar = document.getElementById('downloadProgress');
+    let progress = 0;
+    const progressInt = setInterval(() => {
+      if (!isDownloading) { clearInterval(progressInt); return; }
+      if (progress < 90) progress += (100 - progress) / 20;
+      bar.style.width = `${progress}%`;
+    }, 400);
+
+    try {
+      const res = await fetch(`${API}/download`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: currentVideoUrl, quality: selectedQuality, format: 'mp4' })
+      });
+
+      if (!res.ok) throw new Error('Download failed');
+
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      const title = document.getElementById('detailTitle').textContent.replace(/[^\w\s]/gi, '').substring(0, 30);
+      
+      a.href = url;
+      a.download = `${title}_${selectedQuality}.mp4`;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+
+      clearInterval(progressInt);
+      bar.style.width = '100%';
+      showModalResult('✅', 'Success!', 'Your download has finished.');
+    } catch (err) {
+      clearInterval(progressInt);
+      showModalResult('❌', 'Download Failed', err.message);
+    } finally {
+      isDownloading = false;
+    }
+  }
+
+  function showModalResult(icon, title, msg) {
+    document.getElementById('resultIcon').textContent = icon;
+    document.getElementById('resultTitle').textContent = title;
+    document.getElementById('resultMsg').textContent = msg;
+    showModalState('Result');
+  }
+
+  // Update currentVideoUrl when loading details
+  const originalLoadVideoDetails = loadVideoDetails;
+  loadVideoDetails = async function(id) {
+    try {
+      currentVideoUrl = decodeURIComponent(id);
+    } catch(e) { currentVideoUrl = id; }
+    return originalLoadVideoDetails(id);
+  };
 
   // ── KEYBOARD SHORTCUT ───────────────────────────────────────────────────
 

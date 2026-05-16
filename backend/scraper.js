@@ -33,7 +33,7 @@ async function launchBrowser() {
 async function newStealthPage(browser) {
   const context = await browser.newContext({
     userAgent: randomUA(),
-    viewport: { width: 1280, height: 900 },
+    viewport: { width: 1920, height: 1080 },
     locale: "en-US",
     timezoneId: "America/New_York",
     extraHTTPHeaders: {
@@ -58,45 +58,49 @@ async function newStealthPage(browser) {
 // ─── PIN EXTRACTOR ─────────────────────────────────────────────────────────
 
 async function extractVideoPins(page) {
-  await page.waitForTimeout(3000);
+  // Close any popups/overlays
+  try {
+    await page.evaluate(() => {
+      const selectors = ['[aria-label="Close"]', '[data-test-id="close-button"]', '.FullPageSignup__closeButton'];
+      selectors.forEach(s => document.querySelector(s)?.click());
+    });
+  } catch (e) {}
 
-  // Scroll to load more pins (increased cycles and distance)
-  for (let i = 0; i < 15; i++) {
-    await page.evaluate(() => window.scrollBy(0, window.innerHeight * 3));
-    await sleep(1500 + Math.random() * 1000);
+  await page.waitForTimeout(2000);
+
+  // Faster scroll for initial load
+  for (let i = 0; i < 6; i++) {
+    await page.evaluate(() => window.scrollBy(0, window.innerHeight * 2));
+    await sleep(800 + Math.random() * 500);
   }
 
   const pins = await page.evaluate(() => {
     const results = [];
     const seen = new Set();
 
-    // broad selector to catch all pin-like elements
+    // Catch all possible pin containers
     const pinElements = document.querySelectorAll(
-      '[data-test-id="pin"], [data-grid-item], .GrowthUnauthPinImage, div[role="listitem"], [aria-label="Pin card"]'
+      '[data-test-id="pin"], [data-grid-item], .GrowthUnauthPinImage, div[role="listitem"], .Y6S, .XiG'
     );
 
     pinElements.forEach((el) => {
       try {
-        // Robust video indicators:
-        // 1. duration label like "0:15" or "1:30"
-        // 2. video element
-        // 3. specific data attributes or classes
         const text = el.innerText || "";
         const hasDuration = /\d+:\d+/.test(text); 
         
         const hasVideo =
           el.querySelector("video") ||
           el.querySelector('[data-test-id="video-pin-with-controls"]') ||
-          el.querySelector(".videoContainer") ||
           el.querySelector('[aria-label*="video" i]') ||
           el.querySelector('[aria-label*="Video" i]') ||
           el.querySelector(".PinCard--video") ||
-          el.getAttribute("data-is-video") === "true" ||
+          el.querySelector(".play-icon") ||
+          el.querySelector(".video-icon") ||
+          el.querySelector(".vContainer") ||
           hasDuration;
 
         if (!hasVideo) return;
 
-        // Get pin link
         const anchor = el.querySelector("a[href*='/pin/']");
         if (!anchor) return;
 
@@ -108,28 +112,12 @@ async function extractVideoPins(page) {
         const img = el.querySelector("img");
         const thumbnail = img?.src || img?.getAttribute("data-src") || "";
 
-        // Get video src if available (often not available in grid, but we try)
-        const videoEl = el.querySelector("video");
-        const videoSrc = videoEl?.src || videoEl?.querySelector("source")?.src || "";
-
-        // Get title/description
-        const title =
-          img?.alt ||
-          el.querySelector('[data-test-id="pin-title"]')?.innerText ||
-          el.querySelector(".tBJ")?.innerText ||
-          "";
-
-        // Get author
-        const authorEl = el.querySelector('[data-test-id="pinner-name"], .lH2, .zI7');
-        const author = authorEl?.innerText || "";
-
         if (pinUrl && thumbnail) {
           results.push({
             pinUrl,
             thumbnail,
-            videoSrc,
-            title: title.trim(),
-            author: author.trim(),
+            title: (img?.alt || el.querySelector('[data-test-id="pin-title"]')?.innerText || "Pinterest Video").trim(),
+            author: (el.querySelector('[data-test-id="pinner-name"]')?.innerText || "Pinterest").trim(),
             scrapedAt: new Date().toISOString(),
           });
         }
@@ -151,28 +139,31 @@ async function scrapeRandom() {
   const { page, context } = await newStealthPage(browser);
 
   try {
-    console.log("[scraper] Loading Pinterest video feed...");
+    console.log("[scraper] Fetching trending video pins...");
 
-    // Try the video category page first (no login required usually)
-    await page.goto("https://www.pinterest.com/search/pins/?q=trending+videos&rs=typed", {
+    // Try a broad search for videos - most stable way to get results without login
+    const fallbacks = ["aesthetic videos", "nature videos", "funny videos", "cooking videos"];
+    const randomKeyword = fallbacks[Math.floor(Math.random() * fallbacks.length)];
+    
+    await page.goto(`https://www.pinterest.com/search/pins/?q=${encodeURIComponent(randomKeyword)}&rs=typed`, {
       waitUntil: "domcontentloaded",
       timeout: 30000,
     });
 
-    await randomDelay();
-
-    // If redirected to login, try alternate URL
-    const url = page.url();
-    if (url.includes("login") || url.includes("_auth")) {
-      console.log("[scraper] Login wall hit, trying alternate URL...");
+    await page.waitForTimeout(3000);
+    
+    let pins = await extractVideoPins(page);
+    
+    // If still empty, try one more direct idea page
+    if (pins.length === 0) {
+      console.log("[scraper] Search fallback failed, trying direct ideas page...");
       await page.goto("https://www.pinterest.com/ideas/videos/910496889176/", {
         waitUntil: "domcontentloaded",
         timeout: 30000,
       });
-      await randomDelay();
+      pins = await extractVideoPins(page);
     }
 
-    const pins = await extractVideoPins(page);
     console.log(`[scraper] Found ${pins.length} video pins`);
     return pins;
   } finally {
@@ -220,65 +211,160 @@ async function scrapeByKeyword(keyword) {
   }
 }
 
-async function scrapePinDetails(pinUrl) {
+async function scrapePinDetails(pinUrl, contextQuery = "") {
   const browser = await launchBrowser();
   const { page, context } = await newStealthPage(browser);
 
   try {
-    console.log(`[scraper] Fetching details for: ${pinUrl}`);
+    console.log(`[scraper] Fetching details for: ${pinUrl} (Context: ${contextQuery || 'Feed'})`);
+    // Use domcontentloaded to avoid networkidle timeouts on heavy Pinterest pages
     await page.goto(pinUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
-    await randomDelay();
+    
+    // Scroll more to trigger related pins ("More like this" is often lower)
+    await page.evaluate(() => window.scrollBy(0, 1500));
+    await page.waitForTimeout(3000);
 
-    // Extract video src
     const details = await page.evaluate(() => {
-      const videoEl = document.querySelector("video");
-      const videoSrc = videoEl?.src || videoEl?.querySelector("source")?.src || "";
+      let videoSrc = "";
+      let title = "";
+      let description = "";
+      let author = "";
+      let uploadDate = "";
+      let viewCount = null;
+
+      // 1. Try JSON-LD (Schema.org) - Most reliable for metadata
+      const jsonLdScripts = document.querySelectorAll('script[type="application/ld+json"]');
+      jsonLdScripts.forEach(script => {
+        try {
+          const data = JSON.parse(script.innerText);
+          const root = Array.isArray(data) ? data[0] : data;
+          
+          if (root["@type"] === "VideoObject" || root.video) {
+            const video = root.video || root;
+            videoSrc = video.contentUrl || video.embedUrl || videoSrc;
+            uploadDate = video.uploadDate || video.datePublished || video.dateCreated || uploadDate;
+            title = root.name || title;
+            description = root.description || description;
+            author = root.author?.name || author;
+            
+            if (video.interactionStatistic) {
+              const stats = Array.isArray(video.interactionStatistic) ? video.interactionStatistic : [video.interactionStatistic];
+              const viewStat = stats.find(s => s.interactionType?.includes("WatchAction") || s.interactionType?.includes("ViewAction"));
+              if (viewStat) viewCount = viewStat.userInteractionCount;
+            }
+          } else if (root["@type"] === "SocialMediaPosting" || root["@type"] === "Article") {
+            title = root.headline || root.name || title;
+            description = root.articleBody || root.description || description;
+            author = root.author?.name || author;
+            uploadDate = root.datePublished || root.dateCreated || uploadDate;
+          }
+        } catch (e) {}
+      });
+
+      // 2. Fallback to DOM Selectors
+      if (!videoSrc) {
+        const videoEl = document.querySelector("video");
+        videoSrc = videoEl?.src || videoEl?.querySelector("source")?.src || "";
+      }
       
-      const title = document.querySelector('h1, [data-test-id="pinTitle"]')?.innerText || "";
-      const description = document.querySelector('[data-test-id="pin-description-text"], .p7I')?.innerText || "";
-      const author = document.querySelector('[data-test-id="pinner-name"]')?.innerText || "";
+      if (!title) title = document.querySelector('h1, [data-test-id="pinTitle"]')?.innerText || "";
+      if (!description) description = document.querySelector('[data-test-id="pin-description-text"], .p7I')?.innerText || "";
+      if (!author) author = document.querySelector('[data-test-id="pinner-name"]')?.innerText || "";
       
-      const viewCount = "N/A"; 
-      const uploadDate = new Date().toLocaleDateString();
+      if (uploadDate) {
+        try {
+          const d = new Date(uploadDate);
+          if (!isNaN(d.getTime())) {
+            uploadDate = d.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+          } else {
+            uploadDate = "Recently";
+          }
+        } catch(e) {
+          uploadDate = "Recently";
+        }
+      } else {
+        uploadDate = "Recently";
+      }
 
       // Related pins
       const relatedResults = [];
       const relatedSeen = new Set();
-      const pinElements = document.querySelectorAll('[data-test-id="pin"]');
+      const pinElements = document.querySelectorAll('[data-test-id="pin"], .GrowthUnauthPinImage, [data-grid-item]');
       
       pinElements.forEach(el => {
         try {
           const anchor = el.querySelector("a[href*='/pin/']");
           if (!anchor) return;
           const url = anchor.href;
-          if (relatedSeen.has(url)) return;
+          if (relatedSeen.has(url) || url.includes(window.location.pathname)) return;
           relatedSeen.add(url);
 
           const img = el.querySelector("img");
           const thumb = img?.src || "";
-          const t = img?.alt || el.querySelector('[data-test-id="pin-title"]')?.innerText || "";
+          if (!thumb || thumb.includes("75x75") || thumb.includes("user")) return;
 
-          if (url && thumb) {
-            relatedResults.push({
-              pinUrl: url,
-              thumbnail: thumb,
-              title: t.trim(),
-              author: el.querySelector('[data-test-id="pinner-name"]')?.innerText || "",
-            });
-          }
+          relatedResults.push({
+            pinUrl: url,
+            thumbnail: thumb,
+            title: (img?.alt || "Pinterest Video").trim(),
+            author: el.querySelector('[data-test-id="pinner-name"]')?.innerText || "Pinterest",
+          });
         } catch (e) {}
       });
 
       return {
         videoSrc,
-        title,
-        description,
-        author,
+        title: title.trim(),
+        description: description.trim(),
+        author: author.trim(),
         viewCount,
         uploadDate,
         related: relatedResults.slice(0, 20)
       };
     });
+
+    // FALLBACK: If no related pins found, or if we want to honor the search/feed context
+    if (details.related.length < 5) {
+      console.log(`[scraper] Not enough related pins. Using context: ${contextQuery || 'Trending'}`);
+      try {
+        let keyword = contextQuery;
+        if (!keyword) {
+          // If from feed, pick something from title or just generic trending
+          const words = details.title.split(/\s+/).filter(w => w.length > 3);
+          keyword = words.length > 0 ? words[0] + " trending" : "trending videos";
+        }
+        
+        const searchUrl = `https://www.pinterest.com/search/pins/?q=${encodeURIComponent(keyword)}&rs=typed`;
+        await page.goto(searchUrl, { waitUntil: "domcontentloaded", timeout: 20000 });
+        await page.evaluate(() => window.scrollBy(0, 800));
+        await page.waitForTimeout(2000);
+        
+        const fallbackPins = await page.evaluate(() => {
+          const results = [];
+          const seen = new Set();
+          const items = document.querySelectorAll('[data-test-id="pin"], .GrowthUnauthPinImage');
+          items.forEach(el => {
+            try {
+              const anchor = el.querySelector("a[href*='/pin/']");
+              if (!anchor || seen.has(anchor.href)) return;
+              const img = el.querySelector("img");
+              if (!img || !img.src || img.src.includes("75x75")) return;
+              seen.add(anchor.href);
+              results.push({
+                pinUrl: anchor.href,
+                thumbnail: img.src,
+                title: img.alt || "Related Video",
+                author: el.querySelector('[data-test-id="pinner-name"]')?.innerText || "Pinterest",
+              });
+            } catch(e) {}
+          });
+          return results;
+        });
+        
+        // Merge results
+        details.related = [...details.related, ...fallbackPins].slice(0, 20);
+      } catch (e) {}
+    }
 
     return { success: true, ...details };
   } catch (err) {

@@ -132,17 +132,16 @@ async function extractVideoPins(page) {
   return pins;
 }
 
-// ─── SCRAPE RANDOM ─────────────────────────────────────────────────────────
+// ─── SCRAPE 200 PINS ───────────────────────────────────────────────────────
 
-async function scrapeRandom() {
+async function scrape200Pins() {
   const browser = await launchBrowser();
   const { page, context } = await newStealthPage(browser);
 
   try {
-    console.log("[scraper] Fetching trending video pins...");
+    console.log("[scraper] Fetching 200 trending video pins...");
 
-    // Try a broad search for videos - most stable way to get results without login
-    const fallbacks = ["aesthetic videos", "nature videos", "funny videos", "cooking videos"];
+    const fallbacks = ["aesthetic videos", "nature videos", "funny videos", "cooking videos", "satisfying videos"];
     const randomKeyword = fallbacks[Math.floor(Math.random() * fallbacks.length)];
     
     await page.goto(`https://www.pinterest.com/search/pins/?q=${encodeURIComponent(randomKeyword)}&rs=typed`, {
@@ -152,19 +151,39 @@ async function scrapeRandom() {
 
     await page.waitForTimeout(3000);
     
-    let pins = await extractVideoPins(page);
-    
-    // If still empty, try one more direct idea page
-    if (pins.length === 0) {
-      console.log("[scraper] Search fallback failed, trying direct ideas page...");
-      await page.goto("https://www.pinterest.com/ideas/videos/910496889176/", {
-        waitUntil: "domcontentloaded",
-        timeout: 30000,
+    // Close any popups/overlays
+    try {
+      await page.evaluate(() => {
+        const selectors = ['[aria-label="Close"]', '[data-test-id="close-button"]', '.FullPageSignup__closeButton'];
+        selectors.forEach(s => document.querySelector(s)?.click());
       });
-      pins = await extractVideoPins(page);
+    } catch (e) {}
+
+    let pins = [];
+    let attempts = 0;
+    while (pins.length < 200 && attempts < 30) {
+      await page.evaluate(() => window.scrollBy(0, window.innerHeight * 2));
+      await sleep(1000 + Math.random() * 1000);
+      
+      const newPins = await extractVideoPins(page);
+      
+      // Deduplicate
+      const seen = new Set(pins.map(p => p.pinUrl));
+      for (const p of newPins) {
+        if (!seen.has(p.pinUrl)) {
+          pins.push(p);
+          seen.add(p.pinUrl);
+        }
+      }
+      
+      console.log(`[scraper] Collected ${pins.length}/200 pins...`);
+      attempts++;
     }
 
-    console.log(`[scraper] Found ${pins.length} video pins`);
+    // Limit to exactly 200
+    pins = pins.slice(0, 200);
+
+    console.log(`[scraper] Finished collecting ${pins.length} video pins`);
     return pins;
   } finally {
     await context.close();
@@ -376,4 +395,4 @@ async function scrapePinDetails(pinUrl, contextQuery = "") {
   }
 }
 
-module.exports = { scrapeRandom, scrapeByKeyword, scrapePinDetails };
+module.exports = { scrape200Pins, scrapeByKeyword, scrapePinDetails };

@@ -757,38 +757,15 @@
 <header>
   <div class="logo" onclick="window.location.hash='#/'" style="cursor:pointer">Pin<span>Vid</span></div>
   <div class="header-right">
-    <span class="cache-count" id="cacheCount">0 cached</span>
     <button class="btn btn-ghost" onclick="loadRandom()">↻ Refresh</button>
   </div>
 </header>
 
 <!-- HOME VIEW -->
 <div id="homeView" class="view active">
-  <!-- SEARCH -->
-  <div class="search-wrap">
-    <div class="search-label">Search Pinterest Video Pins</div>
-    <div class="search-row">
-      <input
-        class="search-input"
-        id="searchInput"
-        type="text"
-        placeholder="e.g. aesthetic room, cooking, travel vlog..."
-        autocomplete="off"
-      />
-      <button class="btn btn-primary" onclick="doSearch()">Search</button>
-    </div>
-  </div>
-
-  <!-- CATEGORIES -->
-  <div class="categories-wrap" id="categoriesWrap"></div>
-
-  <!-- STATUS BAR -->
-  <div class="status-bar">
-    <div class="status-text" id="statusText">Loading trending video pins...</div>
-    <div class="pill-tabs">
-      <button class="pill active" id="tab-live" onclick="setTab('live')">Live</button>
-      <button class="pill" id="tab-cached" onclick="setTab('cached')">Cached</button>
-    </div>
+  <!-- HEADER STATUS -->
+  <div class="status-bar" style="justify-content: center; padding-top: 10px;">
+    <div class="status-text" id="statusText"></div>
   </div>
 
   <!-- SKELETON -->
@@ -935,17 +912,6 @@
 
 <script>
   const API = 'http://localhost:3001/api';
-  let currentTab = 'live';
-  let activeSearchQuery = '';
-  let nextBookmark = '';
-
-  const CATEGORIES = [
-    "Aesthetic Room", "Healthy Recipes", "Travel Vlog", "Digital Art", 
-    "Street Style", "Nature Photography", "Tech Gadgets", "Workout Tips", 
-    "DIY Crafts", "Space Exploration", "Retro Vibes", "Urban Architecture", 
-    "Cozy Coffee", "Futuristic Tech", "Gaming Setup", "Minimalist Living",
-    "Skincare Routine", "Home Office", "Calisthenics", "Lo-fi Beats"
-  ];
 
   // ── UTILS ──────────────────────────────────────────────────────────────
 
@@ -960,12 +926,8 @@
     document.getElementById('statusText').innerHTML = msg;
   }
 
-  function setTab(tab) {
-    currentTab = tab;
-    document.getElementById('tab-live').classList.toggle('active', tab === 'live');
-    document.getElementById('tab-cached').classList.toggle('active', tab === 'cached');
-    if (tab === 'cached') loadCached();
-    else loadRandom();
+  function setStatus(msg) {
+    document.getElementById('statusText').innerHTML = msg;
   }
 
   function showSkeleton() {
@@ -997,25 +959,7 @@
     document.getElementById('gridWrap').style.display = 'block';
   }
 
-  // ── CATEGORIES ─────────────────────────────────────────────────────────
-
-  function renderCategories() {
-    const wrap = document.getElementById('categoriesWrap');
-    const shuffled = [...CATEGORIES].sort(() => 0.5 - Math.random());
-    const selected = shuffled.slice(0, 15);
-    
-    wrap.innerHTML = selected.map(cat => `
-      <button class="cat-pill" onclick="handleCategoryClick(this, '${cat}')">${cat}</button>
-    `).join('');
-  }
-
-  function handleCategoryClick(el, cat) {
-    document.querySelectorAll('.cat-pill').forEach(p => p.classList.remove('active'));
-    el.classList.add('active');
-    document.getElementById('searchInput').value = cat;
-    activeSearchQuery = cat;
-    doSearch();
-  }
+  // ── (Categories removed) ─────────────────────────────────────────────────
 
   // ── CARD BUILDER ────────────────────────────────────────────────────────
 
@@ -1066,40 +1010,7 @@
     if (targetGridId === 'pinsGrid') showGrid();
   }
 
-  // ── INFINITE SCROLL ─────────────────────────────────────────────────────
-
-  let isLoadingMore = false;
-  window.addEventListener('scroll', () => {
-    if (isLoadingMore || currentTab === 'cached' || window.location.hash.includes('/video/')) return;
-    
-    const { scrollTop, scrollHeight, clientHeight } = document.documentElement;
-    if (scrollTop + clientHeight >= scrollHeight - 800) {
-      loadMore();
-    }
-  });
-
-  async function loadMore() {
-    if (isLoadingMore || !nextBookmark) return;
-    isLoadingMore = true;
-    toast('Loading more...', 'info');
-    
-    try {
-      let url = `${API}/pinterest/feed?page=${encodeURIComponent(nextBookmark)}`;
-      if (activeSearchQuery) url += `&query=${encodeURIComponent(activeSearchQuery)}`;
-      
-      const res = await fetch(url);
-      const data = await res.json();
-      
-      if (data.success && data.pins.length > 0) {
-        nextBookmark = data.bookmark;
-        renderPins(data.pins, true);
-      }
-    } catch (err) {
-      console.error('Failed to load more:', err);
-    } finally {
-      isLoadingMore = false;
-    }
-  }
+  // ── (Infinite scroll disabled) ──────────────────────────────────────────
 
   // ── DETAIL VIEW LOGIC ──────────────────────────────────────────────────
 
@@ -1130,7 +1041,7 @@
     window.scrollTo(0, 0);
 
     try {
-      const res = await fetch(`${API}/pins/details?url=${encodeURIComponent(pinUrl)}&q=${encodeURIComponent(activeSearchQuery)}`);
+      const res = await fetch(`${API}/pins/details?url=${encodeURIComponent(pinUrl)}`);
       const data = await res.json();
       
       if (!data.success) throw new Error(data.error);
@@ -1210,83 +1121,26 @@
   async function loadRandom() {
     const hash = window.location.hash;
     if (hash && hash !== '#/') return;
-    activeSearchQuery = '';
-    nextBookmark = '';
     showSkeleton();
-    setStatus('🌐 Scraping live from Pinterest...');
     try {
-      const res = await fetch(`${API}/pinterest/feed`);
+      const res = await fetch(`${API}/pins/random`);
       const data = await res.json();
-      if (!data.success) throw new Error(data.error || 'Feed failed');
+      if (!data.success) throw new Error(data.error || 'Fetch failed');
 
       if (data.pins && data.pins.length > 0) {
-        nextBookmark = data.bookmark;
         renderPins(data.pins);
-        setStatus(`Showing <strong>${data.count}</strong> video pins`);
-        updateCacheCount();
       } else {
         showEmpty();
-        setStatus('No video pins found — try searching for something specific');
       }
+      updateCacheCount();
     } catch (err) {
       showEmpty();
-      setStatus('Failed to load feed');
       console.error(err);
     }
   }
 
-  async function doSearch() {
-    const q = document.getElementById('searchInput').value.trim();
-    if (!q) { toast('Enter a search term first', 'error'); return; }
-    activeSearchQuery = q;
-    nextBookmark = '';
-    
-    showSkeleton();
-    setStatus(`Searching for "<strong>${q}</strong>"...`);
-
-    try {
-      const res = await fetch(`${API}/pinterest/feed?query=${encodeURIComponent(q)}`);
-      const data = await res.json();
-      if (!data.success) throw new Error(data.error);
-
-      if (data.pins && data.pins.length > 0) {
-        nextBookmark = data.bookmark;
-        renderPins(data.pins);
-        const isCache = data.pins[0]?.source === 'cache';
-        setStatus(isCache
-          ? `Showing cached results for "<strong>${q}</strong>" — fetching fresh...`
-          : `<strong>${data.count}</strong> results for "<strong>${q}</strong>"`);
-        updateCacheCount();
-      } else {
-        showEmpty();
-        setStatus(`No results for "<strong>${q}</strong>" yet — try again in a moment`);
-      }
-    } catch (err) {
-      showEmpty();
-      setStatus('Search failed');
-    }
-  }
-
-  async function loadCached() {
-    showLoading('LOADING CACHE...');
-    try {
-      const res = await fetch(`${API}/pins/cached`);
-      const data = await res.json();
-      renderPins(data.pins);
-      setStatus(`<strong>${data.count}</strong> cached video pins`);
-      toast(`Showing ${data.count} cached pins`);
-    } catch (err) {
-      showEmpty();
-      toast('Failed to load cache', 'error');
-    }
-  }
-
   async function updateCacheCount() {
-    try {
-      const res = await fetch(`${API}/pins/cached`);
-      const data = await res.json();
-      document.getElementById('cacheCount').textContent = `${data.count} cached`;
-    } catch (e) {}
+    // Hidden from nav bar
   }
 
   // ── DOWNLOAD MODAL LOGIC ───────────────────────────────────────────────
@@ -1434,22 +1288,13 @@
     return originalLoadVideoDetails(id);
   };
 
-  // ── KEYBOARD SHORTCUT ───────────────────────────────────────────────────
-
-  document.getElementById('searchInput').addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') {
-      document.querySelectorAll('.cat-pill').forEach(p => p.classList.remove('active'));
-      doSearch();
-    }
-  });
-
   // ── INIT ────────────────────────────────────────────────────────────────
-  renderCategories();
   router(); // Initial route check
   if (window.location.hash === '#/' || !window.location.hash) {
     loadRandom();
+  } else {
+    updateCacheCount();
   }
-  updateCacheCount();
 </script>
 </body>
 </html>

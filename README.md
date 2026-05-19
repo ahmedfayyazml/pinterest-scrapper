@@ -1,13 +1,14 @@
 # PinVid — Pinterest Video Scraper
 
-Scrapes Pinterest for **video-only pins**, caches them locally in SQLite, and serves a slick dark UI with live + cached search.
+Scrapes Pinterest for **video-only pins**, caches them in Firestore, and serves a slick dark UI with a rolling 96-hour batch feed.
 
 ---
 
 ## Stack
 - **Backend**: Node.js + Express
 - **Scraping**: Playwright (headless Chromium, stealth mode)
-- **Cache**: SQLite via `better-sqlite3`
+- **Database**: Firebase Firestore
+- **Scheduling**: node-cron (96-hour rolling cache)
 - **Frontend**: Plain HTML/CSS/JS (served by Express)
 
 ---
@@ -25,16 +26,39 @@ npm install
 npx playwright install chromium
 ```
 
-### 3. Run the server
+### 3. Firebase Setup
+You must configure Firebase Firestore for the database:
+1. Go to the [Firebase Console](https://console.firebase.google.com/).
+2. Create a new project (or use an existing one).
+3. Enable **Firestore Database** in the project.
+4. Go to **Project Settings** > **Service Accounts**.
+5. Click **Generate new private key**.
+6. Save the downloaded file as `backend/serviceAccountKey.json`.
+
+### 4. Create `.env`
+In the `backend` directory, create a `.env` file (or use the provided template):
+```env
+FIREBASE_KEY_PATH=./serviceAccountKey.json
+PORT=3001
+```
+
+### 5. Run Migration (If upgrading from SQLite)
+If you have existing data in `backend/data/pins.db`, run the one-time migration script:
+```bash
+cd backend
+node migrate.js
+```
+
+### 6. Run the server
 ```bash
 # Production
 node server.js
 
 # Dev (auto-reload)
-npx nodemon server.js
+npm run dev
 ```
 
-### 4. Open the app
+### 7. Open the app
 Visit: **http://localhost:3001**
 
 ---
@@ -43,10 +67,10 @@ Visit: **http://localhost:3001**
 
 | Feature | What happens |
 |---|---|
-| Page load | Auto-scrapes Pinterest trending video feed |
-| Search bar | Hits Pinterest live + queries local SQLite cache simultaneously |
-| Cached tab | Shows all previously scraped pins from SQLite |
-| Refresh button | Re-scrapes fresh pins |
+| Background Scraper | Automatically runs every 96 hours to gather 200 fresh pins into Firestore. |
+| Page load | Pulls exactly from the current Firestore batch and shuffles pins using Fisher-Yates. |
+| Refresh button | Re-shuffles the current cache without triggering a new scrape. |
+| Detail View | Fetches detailed video URLs natively via Pinterest Proxy + Scraper fallback. |
 
 ---
 
@@ -54,33 +78,27 @@ Visit: **http://localhost:3001**
 
 | Endpoint | Description |
 |---|---|
-| `GET /api/pins/random` | Scrape trending video pins |
-| `GET /api/pins/search?q=keyword` | Live scrape + cache search merged |
-| `GET /api/pins/cached` | Return all cached pins from SQLite |
-
----
-
-## Notes
-
-- Pinterest may redirect to a login wall — the scraper handles this gracefully and returns an empty result
-- All scraped pins are cached in `backend/data/pins.db` (SQLite)
-- The scraper uses random delays + stealth headers to avoid blocks
-- For best results, run from a residential IP (not a datacenter/VPS)
+| `GET /api/pins/random` | Returns shuffled pins from the current 96-hour batch |
+| `GET /api/pinterest/feed` | Used for pagination, falls back to cache |
+| `GET /api/status` | Returns timestamp of last scrape and next schedule |
 
 ---
 
 ## File Structure
 
-```
+```text
 pinterest-scraper/
 ├── backend/
-│   ├── server.js       ← Express app + API routes
-│   ├── scraper.js      ← Playwright scraping logic
-│   ├── db.js           ← SQLite cache layer
-│   ├── data/           ← Auto-created, holds pins.db
+│   ├── server.js             ← Express app + API routes + Cron
+│   ├── scraper.js            ← Playwright scraping logic
+│   ├── db.js                 ← Firestore wrapper methods
+│   ├── firebase.js           ← Firebase Admin initialization
+│   ├── migrate.js            ← SQLite to Firestore migration script
+│   ├── .env                  ← Environment variables
+│   ├── serviceAccountKey.json← Your Firebase Credentials (ignored in git)
 │   └── package.json
 ├── frontend/
 │   └── public/
-│       └── index.html  ← Full UI (served by Express)
+│       └── index.html        ← Full UI (served by Express)
 └── README.md
 ```

@@ -1,0 +1,6 @@
+node_modules/
+.env
+serviceAccountKey.json
+pintrest-pin-videos-firebase-adminsdk-fbsvc-21ce612000.json
+*firebase-adminsdk*.json
+data/

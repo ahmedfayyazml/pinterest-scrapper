@@ -1,7 +1,8 @@
 const express = require("express");
 const cors = require("cors");
 const path = require("path");
-const { scrapePinDetails } = require("./scraper");
+const cron = require("node-cron");
+const { scrape200Pins, scrapePinDetails } = require("./scraper");
 const { searchVideos, getCategoryFeed, fetchPinDetails } = require("./pinterest");
 const db = require("./db");
 
@@ -13,6 +14,74 @@ app.use(express.json());
 
 // Serve frontend static files
 app.use(express.static(path.join(__dirname, "../frontend/public")));
+
+// ─── BACKGROUND SCRAPER ────────────────────────────────────────────────────
+
+let currentBatchId = null;
+let lastScrapedTime = null;
+let totalPinsInBatch = 0;
+
+async function checkAndRunScraper() {
+  try {
+    const latestPin = await db.getLatestPin();
+    let shouldRun = false;
+
+    if (!latestPin) {
+      console.log("[startup] No data found in database. Running scraper now.");
+      shouldRun = true;
+    } else {
+      const lastScraped = new Date(latestPin.scrapedAt);
+      const hoursSince = (Date.now() - lastScraped.getTime()) / (1000 * 60 * 60);
+      
+      currentBatchId = latestPin.batchId;
+      lastScrapedTime = latestPin.scrapedAt;
+      
+      if (hoursSince >= 96) {
+        console.log(`[startup] Last scrape was ${hoursSince.toFixed(1)} hours ago. Running scraper now.`);
+        shouldRun = true;
+      } else {
+        console.log(`[startup] Last scrape was ${hoursSince.toFixed(1)} hours ago. Skipping scrape.`);
+        const batchPins = await db.getPinsByBatch(currentBatchId);
+        totalPinsInBatch = batchPins.length;
+      }
+    }
+
+    if (shouldRun) {
+      await runBatchScrape();
+    }
+  } catch (err) {
+    console.error("[startup] Error checking scraper state:", err);
+  }
+}
+
+async function runBatchScrape() {
+  try {
+    console.log("[batch-scraper] Starting 96-hour batch scrape...");
+    const pins = await scrape200Pins();
+    if (pins.length === 0) {
+      console.log("[batch-scraper] Scrape returned 0 pins. Aborting batch save.");
+      return;
+    }
+
+    const newBatchId = "batch_" + Date.now();
+    const timestamp = new Date().toISOString();
+    
+    // Save new batch and delete old batches through db wrapper
+    await db.saveBatchPins(pins, newBatchId, timestamp);
+    
+    console.log(`[batch-scraper] Saved ${pins.length} pins to batch ${newBatchId}.`);
+    
+    currentBatchId = newBatchId;
+    lastScrapedTime = timestamp;
+    totalPinsInBatch = pins.length;
+  } catch (err) {
+    console.error("[batch-scraper] Error during batch scrape:", err);
+  }
+}
+
+// Check every hour if 96 hours have passed
+cron.schedule("0 * * * *", checkAndRunScraper);
+checkAndRunScraper();
 
 // ─── HELPERS ───────────────────────────────────────────────────────────────
 
@@ -70,11 +139,13 @@ app.get("/api/pinterest/feed", async (req, res) => {
 
     // Only if live returned 0 pins, fall back to cache
     console.log(`[/api/pinterest/feed] ⚠️ Live returned 0 — falling back to DB cache`);
-    const fallback = dbPinsToFeed(db.getAllPins().filter(p => p.thumbnail));
+    const allPins = await db.getAllPins();
+    const fallback = dbPinsToFeed(allPins.filter(p => p.thumbnail));
     res.json({ success: true, count: fallback.length, pins: fallback, bookmark: "" });
   } catch (err) {
     console.error("[/api/pinterest/feed] ❌ Error:", err.message);
-    const fallback = dbPinsToFeed(db.getAllPins().filter(p => p.thumbnail));
+    const allPins = await db.getAllPins();
+    const fallback = dbPinsToFeed(allPins.filter(p => p.thumbnail));
     if (fallback.length > 0) {
       return res.json({ success: true, count: fallback.length, pins: fallback, bookmark: "" });
     }
@@ -86,14 +157,26 @@ app.get("/api/pinterest/feed", async (req, res) => {
 
 app.get("/api/pins/random", async (req, res) => {
   try {
-    const result = await getCategoryFeed("trending videos");
-    const pins = result.pins.length > 0
-      ? result.pins
-      : db.getAllPins().sort(() => 0.5 - Math.random()).slice(0, 20);
+    console.log("[/api/pins/random] Fetching from batch cache...");
+    let pins = [];
+    if (currentBatchId) {
+      pins = await db.getPinsByBatch(currentBatchId);
+    }
+    
+    if (pins.length === 0) {
+      pins = await db.getAllPins();
+    }
+    
+    // Fisher-Yates shuffle
+    for (let i = pins.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [pins[i], pins[j]] = [pins[j], pins[i]];
+    }
+    
     res.json({ success: true, count: pins.length, pins });
   } catch (err) {
-    const fallback = db.getAllPins().sort(() => 0.5 - Math.random()).slice(0, 20);
-    res.json({ success: true, count: fallback.length, pins: fallback });
+    console.error("[/api/pins/random] Error:", err.message);
+    res.json({ success: false, error: err.message });
   }
 });
 
@@ -110,56 +193,7 @@ app.get("/api/pins/search", async (req, res) => {
 
 // ─── ROUTES ────────────────────────────────────────────────────────────────
 
-// GET /api/pins/random — scrape trending video pins
-app.get("/api/pins/random", async (req, res) => {
-  try {
-    console.log("[/api/pins/random] Starting random scrape...");
-    let pins = [];
-    
-    // Set a timeout for the scraper to prevent hanging the request
-    const scraperPromise = scrapeRandom();
-    const timeoutPromise = new Promise((_, reject) => 
-      setTimeout(() => reject(new Error("Scraper timeout")), 25000)
-    );
-
-    try {
-      pins = await Promise.race([scraperPromise, timeoutPromise]);
-    } catch (e) {
-      console.error("[/api/pins/random] Scraper failed or timed out:", e.message);
-    }
-    
-    // Fallback logic
-    if (!pins || pins.length === 0) {
-      console.log("[/api/pins/random] Live scrape empty. Falling back to DB...");
-      pins = db.getAllPins();
-      
-      // SHUFFLE
-      pins = pins.sort(() => 0.5 - Math.random()).slice(0, 20);
-    } else {
-      // cache them
-      pins.forEach((pin) => db.upsertPin(pin));
-    }
-
-    // FINAL EMERGENCY FALLBACK: If still 0 (DB empty and scraper failed)
-    if (pins.length === 0) {
-      console.log("[/api/pins/random] TOTAL FAILURE. Returning mock pins.");
-      pins = [
-        {
-          pinUrl: "https://www.pinterest.com/pin/912823418214046640/",
-          thumbnail: "https://i.pinimg.com/564x/0f/55/92/0f55928d3a77f9888916d16f39e4e48a.jpg",
-          title: "Premium Aesthetic Video (Mock)",
-          author: "PinVid System",
-          scrapedAt: new Date().toISOString()
-        }
-      ];
-    }
-    
-    res.json({ success: true, count: pins.length, pins });
-  } catch (err) {
-    console.error("[/api/pins/random] Global Error:", err.message);
-    res.json({ success: true, count: 0, pins: [], error: err.message });
-  }
-});
+// (Legacy live scrape route replaced by the one above)
 
 // GET /api/pins/search?q=keyword — live scrape + local cache
 app.get("/api/pins/search", async (req, res) => {
@@ -171,21 +205,31 @@ app.get("/api/pins/search", async (req, res) => {
 
     // Run both simultaneously
     const [livePins, cachedPins] = await Promise.allSettled([
-      scrapeByKeyword(query),
-      Promise.resolve(db.searchPins(query)),
+      searchVideos(query), // was scrapeByKeyword
+      db.searchPins(query),
     ]);
 
-    const live = livePins.status === "fulfilled" ? livePins.value : [];
-    const cached = cachedPins.status === "fulfilled" ? cachedPins.value : [];
+    const live = livePins.status === "fulfilled" && livePins.value ? livePins.value.pins || [] : [];
+    const cached = cachedPins.status === "fulfilled" && cachedPins.value ? cachedPins.value : [];
 
     // Cache live results
-    live.forEach((pin) => db.upsertPin(pin));
+    live.forEach((pin) => {
+      db.upsertPin({
+        pinUrl: pin.pinUrl || `https://www.pinterest.com/pin/${pin.id}/`,
+        thumbnail: pin.thumbnail,
+        videoSrc: pin.video_url || "",
+        title: pin.title,
+        author: pin.uploader,
+        scrapedAt: new Date().toISOString()
+      });
+    });
 
     // Merge + deduplicate by pinUrl
     const seen = new Set();
     const merged = [...live, ...cached].filter((pin) => {
-      if (seen.has(pin.pinUrl)) return false;
-      seen.add(pin.pinUrl);
+      const pUrl = pin.pinUrl || `https://www.pinterest.com/pin/${pin.id}/`;
+      if (seen.has(pUrl)) return false;
+      seen.add(pUrl);
       return true;
     });
 
@@ -205,7 +249,8 @@ app.get("/api/pins/details", async (req, res) => {
     const pinId = pinUrl.split("/pin/")[1]?.replace(/\//g, "");
     
     // 1. Check DB Cache first
-    const cached = db.getAllPins().find(p => p.pinUrl === pinUrl);
+    const allCached = await db.getAllPins();
+    const cached = allCached.find(p => p.pinUrl === pinUrl);
     if (cached && cached.videoSrc) {
       console.log(`[/api/pins/details] Serving from DB: ${pinId}`);
       return res.json({ success: true, ...cached });
@@ -348,13 +393,37 @@ app.post("/api/download", async (req, res) => {
 });
 
 // GET /api/pins/cached — return all cached pins
-app.get("/api/pins/cached", (req, res) => {
+app.get("/api/pins/cached", async (req, res) => {
   try {
-    const pins = db.getAllPins();
+    const pins = await db.getAllPins();
     res.json({ success: true, count: pins.length, pins });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
+});
+
+// GET /api/status — 96-hour batch state
+app.get("/api/status", (req, res) => {
+  let nextScrapeIn = "Unknown";
+  if (lastScrapedTime) {
+    const lastScraped = new Date(lastScrapedTime);
+    const msSince = Date.now() - lastScraped.getTime();
+    const msLeft = (96 * 60 * 60 * 1000) - msSince;
+    if (msLeft > 0) {
+      const hLeft = Math.floor(msLeft / (1000 * 60 * 60));
+      const mLeft = Math.floor((msLeft % (1000 * 60 * 60)) / (1000 * 60));
+      nextScrapeIn = `${hLeft}h ${mLeft}m`;
+    } else {
+      nextScrapeIn = "Running soon";
+    }
+  }
+
+  res.json({
+    lastScraped: lastScrapedTime,
+    totalPins: totalPinsInBatch,
+    nextScrapeIn: nextScrapeIn,
+    currentBatchId: currentBatchId
+  });
 });
 
 // Fallback → serve frontend

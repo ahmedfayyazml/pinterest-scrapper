@@ -36,11 +36,11 @@ async function checkAndRunScraper() {
       currentBatchId = latestPin.batchId;
       lastScrapedTime = latestPin.scrapedAt;
       
-      if (hoursSince >= 96) {
-        console.log(`[startup] Last scrape was ${hoursSince.toFixed(1)} hours ago. Running scraper now.`);
+      if (hoursSince >= 24) {
+        console.log(`[startup] Last scrape was ${hoursSince.toFixed(1)} hours ago. Running scraper now (24-hour trigger).`);
         shouldRun = true;
       } else {
-        console.log(`[startup] Last scrape was ${hoursSince.toFixed(1)} hours ago. Skipping scrape.`);
+        console.log(`[startup] Last scrape was ${hoursSince.toFixed(1)} hours ago. Skipping scrape (less than 24 hours).`);
         const batchPins = await db.getPinsByBatch(currentBatchId);
         totalPinsInBatch = batchPins.length;
       }
@@ -56,7 +56,7 @@ async function checkAndRunScraper() {
 
 async function runBatchScrape() {
   try {
-    console.log("[batch-scraper] Starting 96-hour batch scrape...");
+    console.log("[batch-scraper] Starting 24-hour batch scrape...");
     const pins = await scrape200Pins();
     if (pins.length === 0) {
       console.log("[batch-scraper] Scrape returned 0 pins. Aborting batch save.");
@@ -402,13 +402,28 @@ app.get("/api/pins/cached", async (req, res) => {
   }
 });
 
-// GET /api/status — 96-hour batch state
+// GET /api/scrape/now — Manually trigger a fresh scrape and save to Firestore
+app.get("/api/scrape/now", async (req, res) => {
+  try {
+    console.log("[/api/scrape/now] Manually triggering batch scrape...");
+    await runBatchScrape();
+    res.json({ 
+      success: true, 
+      message: `Scrape completed! Saved ${totalPinsInBatch} pins into Cloud Firestore. Check your Firebase console!` 
+    });
+  } catch (err) {
+    console.error("[/api/scrape/now] Error:", err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// GET /api/status ── 24-hour trigger status
 app.get("/api/status", (req, res) => {
   let nextScrapeIn = "Unknown";
   if (lastScrapedTime) {
     const lastScraped = new Date(lastScrapedTime);
     const msSince = Date.now() - lastScraped.getTime();
-    const msLeft = (96 * 60 * 60 * 1000) - msSince;
+    const msLeft = (24 * 60 * 60 * 1000) - msSince;
     if (msLeft > 0) {
       const hLeft = Math.floor(msLeft / (1000 * 60 * 60));
       const mLeft = Math.floor((msLeft % (1000 * 60 * 60)) / (1000 * 60));

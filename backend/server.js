@@ -367,28 +367,56 @@ app.post("/api/download", async (req, res) => {
   if (!url) return res.status(400).json({ success: false, error: "Missing url" });
 
   try {
-    console.log(`[/api/download] Downloading: ${url} (${quality})`);
+    console.log(`[/api/download] Spawning yt-dlp to stream: ${url} (${quality || 'best'})`);
     
-    const axios = require("axios");
-    const response = await axios({
-      method: "get",
-      url: url,
-      responseType: "stream"
+    const { spawn } = require("child_process");
+    
+    // Set headers for file download
+    res.setHeader("Content-Type", "video/mp4");
+    res.setHeader("Content-Disposition", 'attachment; filename="pinterest_video.mp4"');
+
+    // Build yt-dlp arguments
+    const args = ["-o", "-"];
+    
+    // If quality or format is audio-only
+    if (quality === "mp3" || format === "mp3" || quality === "Audio") {
+      args.push("-f", "ba"); // best audio
+      res.setHeader("Content-Type", "audio/mpeg");
+      res.setHeader("Content-Disposition", 'attachment; filename="pinterest_audio.mp3"');
+    } else {
+      args.push("-f", "bv*+ba/b"); // best video and audio merged
+    }
+    
+    args.push(url);
+
+    const child = spawn("yt-dlp", args);
+    
+    // Pipe stdout of yt-dlp directly to the HTTP response
+    child.stdout.pipe(res);
+
+    child.stderr.on("data", (data) => {
+      // Log progress or debug info from yt-dlp
+      console.log(`[download-stream-stderr] ${data.toString().trim()}`);
     });
 
-    const contentType = response.headers["content-type"] || "video/mp4";
-    res.setHeader("Content-Type", contentType);
-    
-    // We don't set Content-Length because we're streaming and might not know it
-    // but axios usually gives it to us in response.headers['content-length']
-    if (response.headers["content-length"]) {
-      res.setHeader("Content-Length", response.headers["content-length"]);
-    }
+    child.on("close", (code) => {
+      console.log(`[/api/download] yt-dlp streaming finished with code ${code}`);
+      res.end();
+    });
 
-    response.data.pipe(res);
+    // If request is aborted by the client, kill the yt-dlp process to free resources
+    req.on("close", () => {
+      if (!child.killed) {
+        console.log(`[/api/download] Request aborted. Killing yt-dlp process.`);
+        child.kill("SIGKILL");
+      }
+    });
+
   } catch (err) {
     console.error("[/api/download] Error:", err.message);
-    res.status(500).json({ success: false, error: "Failed to download video" });
+    if (!res.headersSent) {
+      res.status(500).json({ success: false, error: "Failed to download video" });
+    }
   }
 });
 

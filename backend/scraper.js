@@ -1,5 +1,6 @@
 const { chromium } = require("playwright-extra");
 const stealth = require("puppeteer-extra-plugin-stealth")();
+const { exec } = require("child_process");
 
 chromium.use(stealth);
 
@@ -230,168 +231,181 @@ async function scrapeByKeyword(keyword) {
   }
 }
 
-async function scrapePinDetails(pinUrl, contextQuery = "") {
-  const browser = await launchBrowser();
-  const { page, context } = await newStealthPage(browser);
-
-  try {
-    console.log(`[scraper] Fetching details for: ${pinUrl} (Context: ${contextQuery || 'Feed'})`);
-    // Use domcontentloaded to avoid networkidle timeouts on heavy Pinterest pages
-    await page.goto(pinUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
-    
-    // Scroll more to trigger related pins ("More like this" is often lower)
-    await page.evaluate(() => window.scrollBy(0, 1500));
-    await page.waitForTimeout(3000);
-
-    const details = await page.evaluate(() => {
-      let videoSrc = "";
-      let title = "";
-      let description = "";
-      let author = "";
-      let uploadDate = "";
-      let viewCount = null;
-
-      // 1. Try JSON-LD (Schema.org) - Most reliable for metadata
-      const jsonLdScripts = document.querySelectorAll('script[type="application/ld+json"]');
-      jsonLdScripts.forEach(script => {
-        try {
-          const data = JSON.parse(script.innerText);
-          const root = Array.isArray(data) ? data[0] : data;
-          
-          if (root["@type"] === "VideoObject" || root.video) {
-            const video = root.video || root;
-            videoSrc = video.contentUrl || video.embedUrl || videoSrc;
-            uploadDate = video.uploadDate || video.datePublished || video.dateCreated || uploadDate;
-            title = root.name || title;
-            description = root.description || description;
-            author = root.author?.name || author;
-            
-            if (video.interactionStatistic) {
-              const stats = Array.isArray(video.interactionStatistic) ? video.interactionStatistic : [video.interactionStatistic];
-              const viewStat = stats.find(s => s.interactionType?.includes("WatchAction") || s.interactionType?.includes("ViewAction"));
-              if (viewStat) viewCount = viewStat.userInteractionCount;
-            }
-          } else if (root["@type"] === "SocialMediaPosting" || root["@type"] === "Article") {
-            title = root.headline || root.name || title;
-            description = root.articleBody || root.description || description;
-            author = root.author?.name || author;
-            uploadDate = root.datePublished || root.dateCreated || uploadDate;
-          }
-        } catch (e) {}
-      });
-
-      // 2. Fallback to DOM Selectors
-      if (!videoSrc) {
-        const videoEl = document.querySelector("video");
-        videoSrc = videoEl?.src || videoEl?.querySelector("source")?.src || "";
+function fetchPinDetailsYTDLP(pinUrl) {
+  return new Promise((resolve, reject) => {
+    console.log(`[scraper] Fetching details via yt-dlp for: ${pinUrl}`);
+    exec(`yt-dlp -j "${pinUrl}"`, (error, stdout, stderr) => {
+      if (error) {
+        return reject(new Error(stderr || error.message));
       }
-      
-      if (!title) title = document.querySelector('h1, [data-test-id="pinTitle"]')?.innerText || "";
-      if (!description) description = document.querySelector('[data-test-id="pin-description-text"], .p7I')?.innerText || "";
-      if (!author) author = document.querySelector('[data-test-id="pinner-name"]')?.innerText || "";
-      
-      if (uploadDate) {
-        try {
-          const d = new Date(uploadDate);
-          if (!isNaN(d.getTime())) {
-            uploadDate = d.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
-          } else {
-            uploadDate = "Recently";
-          }
-        } catch(e) {
-          uploadDate = "Recently";
-        }
-      } else {
-        uploadDate = "Recently";
-      }
-
-      // Related pins
-      const relatedResults = [];
-      const relatedSeen = new Set();
-      const pinElements = document.querySelectorAll('[data-test-id="pin"], .GrowthUnauthPinImage, [data-grid-item]');
-      
-      pinElements.forEach(el => {
-        try {
-          const anchor = el.querySelector("a[href*='/pin/']");
-          if (!anchor) return;
-          const url = anchor.href;
-          if (relatedSeen.has(url) || url.includes(window.location.pathname)) return;
-          relatedSeen.add(url);
-
-          const img = el.querySelector("img");
-          const thumb = img?.src || "";
-          if (!thumb || thumb.includes("75x75") || thumb.includes("user")) return;
-
-          relatedResults.push({
-            pinUrl: url,
-            thumbnail: thumb,
-            title: (img?.alt || "Pinterest Video").trim(),
-            author: el.querySelector('[data-test-id="pinner-name"]')?.innerText || "Pinterest",
-          });
-        } catch (e) {}
-      });
-
-      return {
-        videoSrc,
-        title: title.trim(),
-        description: description.trim(),
-        author: author.trim(),
-        viewCount,
-        uploadDate,
-        related: relatedResults.slice(0, 20)
-      };
-    });
-
-    // FALLBACK: If no related pins found, or if we want to honor the search/feed context
-    if (details.related.length < 5) {
-      console.log(`[scraper] Not enough related pins. Using context: ${contextQuery || 'Trending'}`);
       try {
-        let keyword = contextQuery;
-        if (!keyword) {
-          // If from feed, pick something from title or just generic trending
-          const words = details.title.split(/\s+/).filter(w => w.length > 3);
-          keyword = words.length > 0 ? words[0] + " trending" : "trending videos";
+        const info = JSON.parse(stdout);
+        let videoSrc = "";
+        
+        if (info.formats && info.formats.length > 0) {
+          const sorted = info.formats.filter(f => f.url).sort((a, b) => {
+            const aIsMp4 = a.url.includes('.mp4') || a.ext === 'mp4';
+            const bIsMp4 = b.url.includes('.mp4') || b.ext === 'mp4';
+            if (aIsMp4 && !bIsMp4) return -1;
+            if (!aIsMp4 && bIsMp4) return 1;
+            
+            const aIsM3u8 = a.url.includes('.m3u8') || a.protocol?.includes('m3u8');
+            const bIsM3u8 = b.url.includes('.m3u8') || b.protocol?.includes('m3u8');
+            if (!aIsM3u8 && bIsM3u8) return -1;
+            if (aIsM3u8 && !bIsM3u8) return 1;
+
+            return (b.tbr || 0) - (a.tbr || 0);
+          });
+          
+          if (sorted.length > 0) {
+            videoSrc = sorted[0].url;
+          }
         }
         
-        const searchUrl = `https://www.pinterest.com/search/pins/?q=${encodeURIComponent(keyword)}&rs=typed`;
-        await page.goto(searchUrl, { waitUntil: "domcontentloaded", timeout: 20000 });
-        await page.evaluate(() => window.scrollBy(0, 800));
-        await page.waitForTimeout(2000);
-        
-        const fallbackPins = await page.evaluate(() => {
-          const results = [];
-          const seen = new Set();
-          const items = document.querySelectorAll('[data-test-id="pin"], .GrowthUnauthPinImage');
-          items.forEach(el => {
-            try {
-              const anchor = el.querySelector("a[href*='/pin/']");
-              if (!anchor || seen.has(anchor.href)) return;
-              const img = el.querySelector("img");
-              if (!img || !img.src || img.src.includes("75x75")) return;
-              seen.add(anchor.href);
-              results.push({
-                pinUrl: anchor.href,
-                thumbnail: img.src,
-                title: img.alt || "Related Video",
-                author: el.querySelector('[data-test-id="pinner-name"]')?.innerText || "Pinterest",
-              });
-            } catch(e) {}
-          });
-          return results;
-        });
-        
-        // Merge results
-        details.related = [...details.related, ...fallbackPins].slice(0, 20);
-      } catch (e) {}
-    }
+        if (!videoSrc) {
+          videoSrc = info.url || "";
+        }
 
-    return { success: true, ...details };
-  } catch (err) {
-    console.error(`[scraper] Detail fetch failed: ${err.message}`);
-    return { success: false, error: err.message };
-  } finally {
-    await context.close();
-    await browser.close();
+        let uploadDate = "Recently";
+        if (info.upload_date) {
+          const y = info.upload_date.substring(0, 4);
+          const m = info.upload_date.substring(4, 6);
+          const d = info.upload_date.substring(6, 8);
+          const dateObj = new Date(`${y}-${m}-${d}`);
+          if (!isNaN(dateObj.getTime())) {
+            uploadDate = dateObj.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+          }
+        }
+
+        resolve({
+          success: true,
+          videoSrc,
+          title: info.title || "Pinterest Video",
+          description: info.description || "",
+          author: info.uploader || "Pinterest User",
+          viewCount: info.view_count || null,
+          uploadDate,
+          thumbnail: info.thumbnail || "",
+          related: []
+        });
+      } catch (e) {
+        reject(e);
+      }
+    });
+  });
+}
+
+async function scrapePinDetails(pinUrl, contextQuery = "") {
+  try {
+    // 1. Try yt-dlp first (FAST & ROBUST)
+    const details = await fetchPinDetailsYTDLP(pinUrl);
+    
+    // Fetch related pins using searchVideos from pinterest.js
+    try {
+      const { searchVideos } = require("./pinterest");
+      let keyword = contextQuery;
+      if (!keyword) {
+        const words = details.title.replace(/[^\w\s]/g, "").split(/\s+/).filter(w => w.length > 3);
+        keyword = words.length > 0 ? words.slice(0, 2).join(" ") + " video" : "aesthetic video";
+      }
+      console.log(`[scraper] Fetching related pins using search query: "${keyword}"`);
+      const searchResult = await searchVideos(keyword);
+      if (searchResult && searchResult.pins) {
+        details.related = searchResult.pins.map(p => ({
+          pinUrl: p.pinUrl,
+          thumbnail: p.thumbnail,
+          title: p.title,
+          author: p.uploader || "Pinterest"
+        })).slice(0, 20);
+      }
+    } catch (e) {
+      console.warn("[scraper] Failed to fetch related pins:", e.message);
+    }
+    
+    return details;
+  } catch (ytdlpError) {
+    console.warn(`[scraper] yt-dlp failed, falling back to browser scraper: ${ytdlpError.message}`);
+    
+    // 2. Playwright fallback
+    const browser = await launchBrowser();
+    const { page, context } = await newStealthPage(browser);
+
+    try {
+      console.log(`[scraper] [browser-fallback] Fetching details for: ${pinUrl}`);
+      await page.goto(pinUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
+      await page.evaluate(() => window.scrollBy(0, 1500));
+      await page.waitForTimeout(3000);
+
+      const details = await page.evaluate(() => {
+        let videoSrc = "";
+        let title = "";
+        let description = "";
+        let author = "";
+        let uploadDate = "";
+        let viewCount = null;
+
+        // Try JSON-LD
+        const jsonLdScripts = document.querySelectorAll('script[type="application/ld+json"]');
+        jsonLdScripts.forEach(script => {
+          try {
+            const data = JSON.parse(script.innerText);
+            const root = Array.isArray(data) ? data[0] : data;
+            
+            if (root["@type"] === "VideoObject" || root.video) {
+              const video = root.video || root;
+              videoSrc = video.contentUrl || video.embedUrl || videoSrc;
+              uploadDate = video.uploadDate || video.datePublished || video.dateCreated || uploadDate;
+              title = root.name || title;
+              description = root.description || description;
+              author = root.author?.name || author;
+            }
+          } catch (e) {}
+        });
+
+        if (!videoSrc) {
+          const videoEl = document.querySelector("video");
+          videoSrc = videoEl?.src || videoEl?.querySelector("source")?.src || "";
+        }
+        
+        if (!title) title = document.querySelector('h1, [data-test-id="pinTitle"]')?.innerText || "";
+        if (!description) description = document.querySelector('[data-test-id="pin-description-text"], .p7I')?.innerText || "";
+        if (!author) author = document.querySelector('[data-test-id="pinner-name"]')?.innerText || "";
+
+        return {
+          videoSrc,
+          title: title.trim(),
+          description: description.trim(),
+          author: author.trim(),
+          viewCount,
+          uploadDate: uploadDate || "Recently",
+          related: []
+        };
+      });
+
+      // Get fallback related
+      try {
+        const { searchVideos } = require("./pinterest");
+        const words = details.title.replace(/[^\w\s]/g, "").split(/\s+/).filter(w => w.length > 3);
+        const keyword = words.length > 0 ? words.slice(0, 2).join(" ") + " video" : "aesthetic video";
+        const searchResult = await searchVideos(keyword);
+        if (searchResult && searchResult.pins) {
+          details.related = searchResult.pins.map(p => ({
+            pinUrl: p.pinUrl,
+            thumbnail: p.thumbnail,
+            title: p.title,
+            author: p.uploader || "Pinterest"
+          })).slice(0, 20);
+        }
+      } catch (e) {}
+
+      return { success: true, ...details };
+    } catch (err) {
+      console.error(`[scraper] Browser fallback failed: ${err.message}`);
+      return { success: false, error: err.message };
+    } finally {
+      await context.close();
+      await browser.close();
+    }
   }
 }
 

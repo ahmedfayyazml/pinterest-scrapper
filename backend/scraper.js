@@ -17,6 +17,29 @@ const USER_AGENTS = [
 
 const randomUA = () => USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
 
+// ─── PROXY RATE LIMITER ────────────────────────────────────────────────────
+// Tracks residential proxy usage to stay within daily quota
+
+const PROXY_URL = process.env.PROXY_URL || "";
+const PROXY_DAILY_LIMIT = parseInt(process.env.PROXY_DAILY_LIMIT || "8", 10);
+
+let proxyUsageToday = 0;
+let proxyResetDate = new Date().toDateString();
+
+function canUseProxy() {
+  const today = new Date().toDateString();
+  if (today !== proxyResetDate) {
+    proxyUsageToday = 0;
+    proxyResetDate = today;
+  }
+  return PROXY_URL && proxyUsageToday < PROXY_DAILY_LIMIT;
+}
+
+function recordProxyUse() {
+  proxyUsageToday++;
+  console.log(`[proxy] Usage: ${proxyUsageToday}/${PROXY_DAILY_LIMIT} today`);
+}
+
 // ─── BROWSER FACTORY ───────────────────────────────────────────────────────
 
 async function launchBrowser() {
@@ -231,10 +254,22 @@ async function scrapeByKeyword(keyword) {
   }
 }
 
+// ─── YT-DLP EXTRACTION (with residential proxy support) ────────────────────
+
 function fetchPinDetailsYTDLP(pinUrl) {
   return new Promise((resolve, reject) => {
-    console.log(`[scraper] Fetching details via yt-dlp for: ${pinUrl}`);
-    exec(`yt-dlp -j "${pinUrl}"`, (error, stdout, stderr) => {
+    // Build yt-dlp command with optional proxy
+    let cmd = "yt-dlp -j";
+    if (canUseProxy()) {
+      cmd += ` --proxy "${PROXY_URL}"`;
+      recordProxyUse();
+      console.log(`[scraper] Fetching details via yt-dlp (WITH PROXY) for: ${pinUrl}`);
+    } else {
+      console.log(`[scraper] Fetching details via yt-dlp (no proxy, quota: ${proxyUsageToday}/${PROXY_DAILY_LIMIT}) for: ${pinUrl}`);
+    }
+    cmd += ` "${pinUrl}"`;
+
+    exec(cmd, { timeout: 30000 }, (error, stdout, stderr) => {
       if (error) {
         return reject(new Error(stderr || error.message));
       }

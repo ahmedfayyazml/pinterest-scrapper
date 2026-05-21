@@ -915,6 +915,23 @@
     ? 'http://localhost:3001/api' 
     : window.location.origin + '/pinterest/api';
 
+  // ── MEDIA PROXY HELPERS ─────────────────────────────────────────────────
+  // Route ALL Pinterest CDN media through our server to bypass hotlink blocks
+
+  function proxyUrl(url) {
+    if (!url) return url;
+    // Only proxy pinimg.com / pinterest.com URLs
+    if (url.includes('pinimg.com') || url.includes('pinterest.com')) {
+      return `${API}/proxy/media?url=${encodeURIComponent(url)}`;
+    }
+    return url;
+  }
+
+  function proxyHls(url) {
+    if (!url) return url;
+    return `${API}/proxy/hls?url=${encodeURIComponent(url)}`;
+  }
+
   // ── UTILS ──────────────────────────────────────────────────────────────
 
   function toast(msg, type = 'success') {
@@ -978,7 +995,8 @@
 
     const title = pin.title || 'Pinterest Video Pin';
     const author = pin.uploader || pin.author || 'Pinterest';
-    const thumb = pin.thumbnail || 'https://via.placeholder.com/220x300/0d1119/5a6480?text=No+Image';
+    const rawThumb = pin.thumbnail || 'https://via.placeholder.com/220x300/0d1119/5a6480?text=No+Image';
+    const thumb = proxyUrl(rawThumb);
 
     div.innerHTML = `
       <div class="card-thumb">
@@ -1048,16 +1066,21 @@
       
       if (!data.success) throw new Error(data.error);
 
-      // Render Player
+      // Render Player — ALL media goes through our proxy to bypass hotlink blocks
+      const posterUrl = proxyUrl(data.thumbnail || '');
       if (data.videoSrc) {
         if (data.videoSrc.includes('.m3u8') && Hls.isSupported()) {
-          playerWrap.innerHTML = `<video id="hlsVideo" controls autoplay loop playsinline poster="${data.thumbnail || ''}" style="width:100%"></video>`;
+          // HLS streams: proxy the playlist so segment URLs get rewritten too
+          const hlsProxied = proxyHls(data.videoSrc);
+          playerWrap.innerHTML = `<video id="hlsVideo" controls autoplay loop playsinline poster="${posterUrl}" style="width:100%"></video>`;
           const hls = new Hls();
-          hls.loadSource(data.videoSrc);
+          hls.loadSource(hlsProxied);
           hls.attachMedia(document.getElementById('hlsVideo'));
         } else {
+          // MP4: proxy the video URL directly
+          const videoProxied = proxyUrl(data.videoSrc);
           playerWrap.innerHTML = `
-            <video src="${data.videoSrc}" controls autoplay loop playsinline poster="${data.thumbnail || ''}"></video>
+            <video src="${videoProxied}" controls autoplay loop playsinline poster="${posterUrl}"></video>
           `;
         }
         document.getElementById('detailDownload').style.display = 'flex';
@@ -1065,7 +1088,7 @@
         playerWrap.innerHTML = `
           <div style="height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:16px; padding:20px; text-align:center">
             <span style="font-size:3rem">⚠️</span>
-            <p style="color:var(--muted)">Direct video playback restricted by Pinterest.</p>
+            <p style="color:var(--muted)">Could not extract video source. Try refreshing.</p>
             <a href="${pinUrl}" target="_blank" class="btn btn-ghost">View on Pinterest</a>
           </div>
         `;

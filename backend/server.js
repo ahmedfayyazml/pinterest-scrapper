@@ -1,7 +1,9 @@
+require('dotenv').config();
 const express = require("express");
 const cors = require("cors");
 const path = require("path");
 const cron = require("node-cron");
+const axios = require("axios");
 const { scrape200Pins, scrapePinDetails } = require("./scraper");
 const { searchVideos, getCategoryFeed, fetchPinDetails } = require("./pinterest");
 const db = require("./db");
@@ -14,6 +16,139 @@ app.use(express.json());
 
 // Serve frontend static files
 app.use(express.static(path.join(__dirname, "../frontend/public")));
+
+// ─── HELPERS: Sanitize data before Firestore writes ────────────────────────
+
+function sanitizeForFirestore(obj) {
+  const clean = {};
+  for (const [key, value] of Object.entries(obj)) {
+    if (value !== undefined) {
+      clean[key] = value;
+    }
+  }
+  return clean;
+}
+
+// ─── MEDIA PROXY — Streams Pinterest CDN content through our server ────────
+// This is the KEY fix: Pinterest blocks direct hotlinking from non-Pinterest
+// domains. By proxying through our server with the correct Referer header,
+// the browser never talks to Pinterest directly, so no blocking occurs.
+
+app.get("/api/proxy/media", async (req, res) => {
+  const targetUrl = req.query.url;
+  if (!targetUrl) return res.status(400).send("Missing ?url=");
+
+  // Only allow proxying Pinterest CDN domains
+  const allowed = ["pinimg.com", "pinterest.com"];
+  try {
+    const hostname = new URL(targetUrl).hostname;
+    if (!allowed.some(d => hostname.endsWith(d))) {
+      return res.status(403).send("Forbidden domain");
+    }
+  } catch (e) {
+    return res.status(400).send("Invalid URL");
+  }
+
+  try {
+    const response = await axios.get(targetUrl, {
+      responseType: "stream",
+      timeout: 30000,
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+        "Referer": "https://www.pinterest.com/",
+        "Origin": "https://www.pinterest.com",
+        "Accept": "*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Sec-Fetch-Dest": "video",
+        "Sec-Fetch-Mode": "no-cors",
+        "Sec-Fetch-Site": "cross-site",
+      },
+    });
+
+    // Forward content headers
+    const ct = response.headers["content-type"];
+    if (ct) res.setHeader("Content-Type", ct);
+
+    const cl = response.headers["content-length"];
+    if (cl) res.setHeader("Content-Length", cl);
+
+    // Allow range requests for video seeking
+    const cr = response.headers["content-range"];
+    if (cr) res.setHeader("Content-Range", cr);
+    const ar = response.headers["accept-ranges"];
+    if (ar) res.setHeader("Accept-Ranges", ar);
+
+    // Cache for 1 hour to reduce repeat fetches
+    res.setHeader("Cache-Control", "public, max-age=3600");
+    res.setHeader("Access-Control-Allow-Origin", "*");
+
+    response.data.pipe(res);
+  } catch (err) {
+    console.error(`[/api/proxy/media] Error proxying ${targetUrl}:`, err.message);
+    if (!res.headersSent) {
+      res.status(502).send("Failed to fetch media");
+    }
+  }
+});
+
+// HLS .m3u8 proxy — rewrites segment URLs inside the playlist so the
+// browser fetches all chunks through our proxy too
+app.get("/api/proxy/hls", async (req, res) => {
+  const targetUrl = req.query.url;
+  if (!targetUrl) return res.status(400).send("Missing ?url=");
+
+  try {
+    const response = await axios.get(targetUrl, {
+      timeout: 15000,
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+        "Referer": "https://www.pinterest.com/",
+        "Origin": "https://www.pinterest.com",
+      },
+    });
+
+    let playlist = response.data;
+
+    // Determine the base URL for resolving relative segment paths
+    const baseUrl = targetUrl.substring(0, targetUrl.lastIndexOf("/") + 1);
+
+    // Get the API base for building proxy URLs
+    const proto = req.headers["x-forwarded-proto"] || req.protocol;
+    const host = req.headers["x-forwarded-host"] || req.headers.host;
+    const apiBase = `${proto}://${host}`;
+
+    // Rewrite every line that looks like a segment/variant URL
+    playlist = playlist.split("\n").map(line => {
+      line = line.trim();
+      if (!line || line.startsWith("#")) {
+        // Rewrite URI= attributes inside #EXT tags (e.g. encryption key URIs)
+        if (line.includes('URI="')) {
+          line = line.replace(/URI="([^"]+)"/g, (match, uri) => {
+            const absUri = uri.startsWith("http") ? uri : baseUrl + uri;
+            return `URI="${apiBase}/api/proxy/media?url=${encodeURIComponent(absUri)}"`;
+          });
+        }
+        return line;
+      }
+      // It's a URL line (segment or sub-playlist)
+      const absUrl = line.startsWith("http") ? line : baseUrl + line;
+      if (absUrl.endsWith(".m3u8")) {
+        return `${apiBase}/api/proxy/hls?url=${encodeURIComponent(absUrl)}`;
+      }
+      return `${apiBase}/api/proxy/media?url=${encodeURIComponent(absUrl)}`;
+    }).join("\n");
+
+    res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Cache-Control", "public, max-age=300");
+    res.send(playlist);
+  } catch (err) {
+    console.error(`[/api/proxy/hls] Error proxying ${targetUrl}:`, err.message);
+    if (!res.headersSent) {
+      res.status(502).send("Failed to fetch HLS playlist");
+    }
+  }
+});
 
 // ─── BACKGROUND SCRAPER ────────────────────────────────────────────────────
 
@@ -41,8 +176,14 @@ async function checkAndRunScraper() {
         shouldRun = true;
       } else {
         console.log(`[startup] Last scrape was ${hoursSince.toFixed(1)} hours ago. Skipping scrape (less than 24 hours).`);
-        const batchPins = await db.getPinsByBatch(currentBatchId);
-        totalPinsInBatch = batchPins.length;
+        try {
+          if (currentBatchId) {
+            const batchPins = await db.getPinsByBatch(currentBatchId);
+            totalPinsInBatch = batchPins.length;
+          }
+        } catch (e) {
+          console.warn("[startup] Could not fetch batch pins:", e.message);
+        }
       }
     }
 
@@ -79,7 +220,7 @@ async function runBatchScrape() {
   }
 }
 
-// Check every hour if 96 hours have passed
+// Check every hour if 24 hours have passed
 cron.schedule("0 * * * *", checkAndRunScraper);
 checkAndRunScraper();
 
@@ -121,16 +262,16 @@ app.get("/api/pinterest/feed", async (req, res) => {
 
     let pins = result.pins || [];
 
-    // Cache live results to DB
+    // Cache live results to DB (sanitized)
     pins.forEach(pin => {
-      db.upsertPin({
+      db.upsertPin(sanitizeForFirestore({
         pinUrl: pin.pinUrl || `https://www.pinterest.com/pin/${pin.id}/`,
-        thumbnail: pin.thumbnail,
+        thumbnail: pin.thumbnail || "",
         videoSrc: pin.video_url || "",
-        title: pin.title,
-        author: pin.uploader,
+        title: pin.title || "Pinterest Video",
+        author: pin.uploader || "Pinterest",
         scrapedAt: new Date().toISOString()
-      });
+      }));
     });
 
     if (pins.length > 0) {
@@ -160,7 +301,11 @@ app.get("/api/pins/random", async (req, res) => {
     console.log("[/api/pins/random] Fetching from batch cache...");
     let pins = [];
     if (currentBatchId) {
-      pins = await db.getPinsByBatch(currentBatchId);
+      try {
+        pins = await db.getPinsByBatch(currentBatchId);
+      } catch (e) {
+        console.warn("[/api/pins/random] Failed to fetch batch:", e.message);
+      }
     }
     
     if (pins.length === 0) {
@@ -180,21 +325,6 @@ app.get("/api/pins/random", async (req, res) => {
   }
 });
 
-app.get("/api/pins/search", async (req, res) => {
-  const query = req.query.q;
-  if (!query) return res.status(400).json({ success: false, error: "Missing q" });
-  try {
-    const result = await searchVideos(query);
-    res.json({ success: true, count: result.pins.length, pins: result.pins });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// ─── ROUTES ────────────────────────────────────────────────────────────────
-
-// (Legacy live scrape route replaced by the one above)
-
 // GET /api/pins/search?q=keyword — live scrape + local cache
 app.get("/api/pins/search", async (req, res) => {
   const query = req.query.q?.trim();
@@ -212,16 +342,16 @@ app.get("/api/pins/search", async (req, res) => {
     const live = livePins.status === "fulfilled" && livePins.value ? livePins.value.pins || [] : [];
     const cached = cachedPins.status === "fulfilled" && cachedPins.value ? cachedPins.value : [];
 
-    // Cache live results
+    // Cache live results (sanitized)
     live.forEach((pin) => {
-      db.upsertPin({
+      db.upsertPin(sanitizeForFirestore({
         pinUrl: pin.pinUrl || `https://www.pinterest.com/pin/${pin.id}/`,
-        thumbnail: pin.thumbnail,
+        thumbnail: pin.thumbnail || "",
         videoSrc: pin.video_url || "",
-        title: pin.title,
-        author: pin.uploader,
+        title: pin.title || "Pinterest Video",
+        author: pin.uploader || "Pinterest",
         scrapedAt: new Date().toISOString()
-      });
+      }));
     });
 
     // Merge + deduplicate by pinUrl
@@ -262,14 +392,14 @@ app.get("/api/pins/details", async (req, res) => {
         console.log(`[/api/pins/details] Fetching via Proxy: ${pinId}`);
         const details = await fetchPinDetails(pinId);
         if (details && details.video_url) {
-          const pinObj = {
+          const pinObj = sanitizeForFirestore({
             pinUrl,
-            thumbnail: details.thumbnail,
+            thumbnail: details.thumbnail || "",
             videoSrc: details.video_url,
-            title: details.title,
-            author: details.uploader,
+            title: details.title || "Pinterest Video",
+            author: details.uploader || "Pinterest",
             scrapedAt: new Date().toISOString()
-          };
+          });
           db.upsertPin(pinObj);
           return res.json({ success: true, ...pinObj });
         }
@@ -278,19 +408,20 @@ app.get("/api/pins/details", async (req, res) => {
       }
     }
 
-    // 3. Fallback to Scraper (SLOW)
+    // 3. Fallback to Scraper (yt-dlp with proxy support)
     console.log(`[/api/pins/details] Falling back to Scraper: ${pinUrl}`);
     const details = await scrapePinDetails(pinUrl);
     if (details.success) {
-      db.upsertPin({
+      const pinObj = sanitizeForFirestore({
         pinUrl,
-        thumbnail: details.thumbnail,
-        videoSrc: details.videoSrc,
-        title: details.title,
-        author: details.author,
+        thumbnail: details.thumbnail || "",
+        videoSrc: details.videoSrc || "",
+        title: details.title || "Pinterest Video",
+        author: details.author || "Pinterest",
         scrapedAt: new Date().toISOString()
       });
-      res.json(details);
+      db.upsertPin(pinObj);
+      res.json({ ...details, ...pinObj, success: true });
     } else {
       res.status(500).json(details);
     }
@@ -361,7 +492,7 @@ app.post("/api/info", async (req, res) => {
   }
 });
 
-// POST /api/download — Stream video download
+// POST /api/download — Stream video download via yt-dlp
 app.post("/api/download", async (req, res) => {
   const { url, quality, format } = req.body;
   if (!url) return res.status(400).json({ success: false, error: "Missing url" });
@@ -377,6 +508,12 @@ app.post("/api/download", async (req, res) => {
 
     // Build yt-dlp arguments
     const args = ["-o", "-"];
+
+    // Add proxy if available
+    const proxyUrl = process.env.PROXY_URL;
+    if (proxyUrl) {
+      args.push("--proxy", proxyUrl);
+    }
     
     // If quality or format is audio-only
     if (quality === "mp3" || format === "mp3" || quality === "Audio") {

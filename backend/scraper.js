@@ -258,22 +258,31 @@ function fetchPinDetailsYTDLP(pinUrl) {
         let videoSrc = "";
         
         if (info.formats && info.formats.length > 0) {
-          const sorted = info.formats.filter(f => f.url).sort((a, b) => {
-            const aIsMp4 = a.url.includes('.mp4') || a.ext === 'mp4';
-            const bIsMp4 = b.url.includes('.mp4') || b.ext === 'mp4';
-            if (aIsMp4 && !bIsMp4) return -1;
-            if (!aIsMp4 && bIsMp4) return 1;
-            
-            const aIsM3u8 = a.url.includes('.m3u8') || a.protocol?.includes('m3u8');
-            const bIsM3u8 = b.url.includes('.m3u8') || b.protocol?.includes('m3u8');
-            if (!aIsM3u8 && bIsM3u8) return -1;
-            if (aIsM3u8 && !bIsM3u8) return 1;
-
-            return (b.tbr || 0) - (a.tbr || 0);
-          });
+          const allFormats = info.formats.filter(f => f.url);
           
-          if (sorted.length > 0) {
-            videoSrc = sorted[0].url;
+          // 1. STRONGLY prefer direct MP4 — HLS segments expire and return 404
+          const mp4Formats = allFormats.filter(f => 
+            (f.url.includes('.mp4') || f.ext === 'mp4') && 
+            !f.url.includes('.m3u8') && !f.protocol?.includes('m3u8')
+          );
+          
+          // 2. Any non-HLS format as fallback
+          const nonHlsFormats = allFormats.filter(f => 
+            !f.url.includes('.m3u8') && !f.protocol?.includes('m3u8') &&
+            !f.url.includes('.cmfv')
+          );
+          
+          // 3. Pick best available (sorted by bitrate, highest first)
+          const preferred = mp4Formats.length > 0 ? mp4Formats : nonHlsFormats;
+          if (preferred.length > 0) {
+            preferred.sort((a, b) => (b.tbr || 0) - (a.tbr || 0));
+            videoSrc = preferred[0].url;
+            console.log(`[scraper] Selected format: ${preferred[0].ext || 'unknown'} @ ${preferred[0].tbr || '?'}kbps (${mp4Formats.length} mp4, ${nonHlsFormats.length} non-hls, ${allFormats.length} total)`);
+          } else if (allFormats.length > 0) {
+            // Absolute last resort: use whatever is available (even HLS)
+            allFormats.sort((a, b) => (b.tbr || 0) - (a.tbr || 0));
+            videoSrc = allFormats[0].url;
+            console.log(`[scraper] WARNING: Only HLS available, using: ${allFormats[0].ext || 'hls'}`);
           }
         }
         
@@ -312,36 +321,13 @@ function fetchPinDetailsYTDLP(pinUrl) {
 
 async function scrapePinDetails(pinUrl, contextQuery = "") {
   try {
-    // 1. Try yt-dlp first (FAST & ROBUST)
+    // 1. Try yt-dlp first (FAST & ROBUST) — NO related pins fetch here
     const details = await fetchPinDetailsYTDLP(pinUrl);
-    
-    // Fetch related pins using searchVideos from pinterest.js
-    try {
-      const { searchVideos } = require("./pinterest");
-      let keyword = contextQuery;
-      if (!keyword) {
-        const words = details.title.replace(/[^\w\s]/g, "").split(/\s+/).filter(w => w.length > 3);
-        keyword = words.length > 0 ? words.slice(0, 2).join(" ") + " video" : "aesthetic video";
-      }
-      console.log(`[scraper] Fetching related pins using search query: "${keyword}"`);
-      const searchResult = await searchVideos(keyword);
-      if (searchResult && searchResult.pins) {
-        details.related = searchResult.pins.map(p => ({
-          pinUrl: p.pinUrl,
-          thumbnail: p.thumbnail,
-          title: p.title,
-          author: p.uploader || "Pinterest"
-        })).slice(0, 20);
-      }
-    } catch (e) {
-      console.warn("[scraper] Failed to fetch related pins:", e.message);
-    }
-    
     return details;
   } catch (ytdlpError) {
     console.warn(`[scraper] yt-dlp failed, falling back to browser scraper: ${ytdlpError.message}`);
     
-    // 2. Playwright fallback
+    // 2. Playwright fallback — video only, no related pins
     const browser = await launchBrowser();
     const { page, context } = await newStealthPage(browser);
 
@@ -397,22 +383,6 @@ async function scrapePinDetails(pinUrl, contextQuery = "") {
         };
       });
 
-      // Get fallback related
-      try {
-        const { searchVideos } = require("./pinterest");
-        const words = details.title.replace(/[^\w\s]/g, "").split(/\s+/).filter(w => w.length > 3);
-        const keyword = words.length > 0 ? words.slice(0, 2).join(" ") + " video" : "aesthetic video";
-        const searchResult = await searchVideos(keyword);
-        if (searchResult && searchResult.pins) {
-          details.related = searchResult.pins.map(p => ({
-            pinUrl: p.pinUrl,
-            thumbnail: p.thumbnail,
-            title: p.title,
-            author: p.uploader || "Pinterest"
-          })).slice(0, 20);
-        }
-      } catch (e) {}
-
       return { success: true, ...details };
     } catch (err) {
       console.error(`[scraper] Browser fallback failed: ${err.message}`);
@@ -424,4 +394,33 @@ async function scrapePinDetails(pinUrl, contextQuery = "") {
   }
 }
 
-module.exports = { scrape200Pins, scrapeByKeyword, scrapePinDetails };
+// ─── FETCH RELATED PINS (separate, non-blocking) ──────────────────────────
+// Called AFTER the response is already sent to the client.
+// Results are cached in Firestore for instant access next time.
+async function fetchRelatedPins(title, contextQuery = "") {
+  try {
+    const { searchVideos } = require("./pinterest");
+    let keyword = contextQuery;
+    if (!keyword) {
+      const words = (title || "").replace(/[^\w\s]/g, "").split(/\s+/).filter(w => w.length > 3);
+      keyword = words.length > 0 ? words.slice(0, 2).join(" ") + " video" : "aesthetic video";
+    }
+    console.log(`[scraper] [background] Fetching related pins: "${keyword}"`);
+    const searchResult = await searchVideos(keyword);
+    if (searchResult && searchResult.pins) {
+      return searchResult.pins.map(p => ({
+        pinUrl: p.pinUrl,
+        thumbnail: p.thumbnail,
+        title: p.title,
+        author: p.uploader || "Pinterest"
+      })).slice(0, 20);
+    }
+    return [];
+  } catch (e) {
+    console.warn("[scraper] [background] Related pins fetch failed:", e.message);
+    return [];
+  }
+}
+
+module.exports = { scrape200Pins, scrapeByKeyword, scrapePinDetails, fetchRelatedPins };
+

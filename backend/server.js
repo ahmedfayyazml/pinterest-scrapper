@@ -4,7 +4,7 @@ const cors = require("cors");
 const path = require("path");
 const cron = require("node-cron");
 const axios = require("axios");
-const { scrape200Pins, scrapePinDetails } = require("./scraper");
+const { scrape200Pins, scrapePinDetails, fetchRelatedPins } = require("./scraper");
 const { searchVideos, getCategoryFeed, fetchPinDetails } = require("./pinterest");
 const db = require("./db");
 const proxyManager = require("./proxyManager");
@@ -83,10 +83,14 @@ function buildAxiosOpts(forceProxy, isStream = true) {
 }
 
 app.get("/api/proxy/media", async (req, res) => {
+  const t0 = Date.now();
   const targetUrl = req.query.url;
   if (!targetUrl) return res.status(400).send("Missing ?url=");
 
   const forceProxy = req.query.forceProxy === "true";
+  const shortUrl = targetUrl.split('/').slice(-2).join('/');
+  console.log(`[media] ─── Request received: ${shortUrl} | forceProxy=${forceProxy} | t=${t0}`);
+  console.log(`[media] [proxy] SOCKS5 active: ${forceProxy}`);
 
   // Only allow proxying Pinterest CDN domains
   const allowed = ["pinimg.com", "pinterest.com"];
@@ -108,13 +112,14 @@ app.get("/api/proxy/media", async (req, res) => {
       });
     }
     proxyManager.useProxy();
-    console.log(`[/api/proxy/media] Tier 3 (SOCKS5 proxy) for: ${targetUrl}`);
-  } else {
-    console.log(`[/api/proxy/media] Tier 2 (VPS direct pipe) for: ${targetUrl}`);
   }
 
   try {
+    console.log(`[media] Starting axios request: t+${Date.now() - t0}ms`);
     const response = await axios.get(targetUrl, buildAxiosOpts(forceProxy, true));
+    const t1 = Date.now();
+    console.log(`[media] Got first byte from CDN: t+${t1 - t0}ms`);
+    console.log(`[cdn] Response time: ${t1 - t0}ms`);
 
     // Forward content headers
     const ct = response.headers["content-type"];
@@ -126,13 +131,21 @@ app.get("/api/proxy/media", async (req, res) => {
     const ar = response.headers["accept-ranges"];
     if (ar) res.setHeader("Accept-Ranges", ar);
 
+    const sizeMB = cl ? (parseInt(cl) / (1024 * 1024)).toFixed(2) : 'unknown';
+    const isHls = (ct || '').includes('mpegurl') || targetUrl.includes('.m3u8');
+    console.log(`[media] Type: ${isHls ? 'HLS segment' : (ct || 'unknown')} | File size: ${sizeMB} MB`);
+
     // Cache for 1 hour to reduce repeat fetches
     res.setHeader("Cache-Control", "public, max-age=3600");
     res.setHeader("Access-Control-Allow-Origin", "*");
 
+    console.log(`[media] Starting pipe to client: t+${Date.now() - t0}ms`);
     response.data.pipe(res);
+    response.data.on('end', () => {
+      console.log(`[media] ─── Pipe complete: ${shortUrl} | total=${Date.now() - t0}ms`);
+    });
   } catch (err) {
-    console.error(`[/api/proxy/media] Error proxying ${targetUrl}:`, err.message);
+    console.error(`[media] ❌ Error proxying ${shortUrl}: ${err.message} | t+${Date.now() - t0}ms`);
     if (!res.headersSent) {
       res.status(502).send("Failed to fetch media");
     }
@@ -142,10 +155,14 @@ app.get("/api/proxy/media", async (req, res) => {
 // HLS .m3u8 proxy — rewrites segment URLs inside the playlist
 // Supports forceProxy param for Tier 3 fallback
 app.get("/api/proxy/hls", async (req, res) => {
+  const t0 = Date.now();
   const targetUrl = req.query.url;
   if (!targetUrl) return res.status(400).send("Missing ?url=");
 
   const forceProxy = req.query.forceProxy === "true";
+  const shortUrl = targetUrl.split('/').slice(-2).join('/');
+  console.log(`[hls] ─── Request received: ${shortUrl} | forceProxy=${forceProxy} | t=${t0}`);
+  console.log(`[hls] [proxy] SOCKS5 active: ${forceProxy}`);
 
   // Tier 3 gate
   if (forceProxy) {
@@ -156,15 +173,16 @@ app.get("/api/proxy/hls", async (req, res) => {
       });
     }
     proxyManager.useProxy();
-    console.log(`[/api/proxy/hls] Tier 3 (SOCKS5 proxy) for: ${targetUrl}`);
-  } else {
-    console.log(`[/api/proxy/hls] Tier 2 (VPS direct) for: ${targetUrl}`);
   }
 
   try {
+    console.log(`[hls] Fetching manifest: t+${Date.now() - t0}ms`);
     const response = await axios.get(targetUrl, buildAxiosOpts(forceProxy, false));
+    const t1 = Date.now();
 
     let playlist = response.data;
+    const manifestSize = playlist.length;
+    console.log(`[hls] Manifest received, size: ${manifestSize} bytes | fetch took: ${t1 - t0}ms`);
 
     // Determine the base URL for resolving relative segment paths
     const baseUrl = targetUrl.substring(0, targetUrl.lastIndexOf("/") + 1);
@@ -178,6 +196,9 @@ app.get("/api/proxy/hls", async (req, res) => {
     // also route through the SOCKS5 proxy if we're in Tier 3
     const fpParam = forceProxy ? "&forceProxy=true" : "";
 
+    console.log(`[hls] Rewriting segment URLs: t+${Date.now() - t0}ms`);
+    // Count segments
+    let segmentCount = 0;
     // Rewrite every line that looks like a segment/variant URL
     playlist = playlist.split("\n").map(line => {
       line = line.trim();
@@ -191,6 +212,7 @@ app.get("/api/proxy/hls", async (req, res) => {
         }
         return line;
       }
+      segmentCount++;
       // It's a URL line (segment or sub-playlist)
       const absUrl = line.startsWith("http") ? line : baseUrl + line;
       if (absUrl.endsWith(".m3u8")) {
@@ -199,12 +221,16 @@ app.get("/api/proxy/hls", async (req, res) => {
       return `${apiBase}/api/proxy/media?url=${encodeURIComponent(absUrl)}${fpParam}`;
     }).join("\n");
 
+    console.log(`[hls] Segments: ${segmentCount}`);
+    console.log(`[hls] Sending rewritten manifest to client: t+${Date.now() - t0}ms`);
+
     res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Cache-Control", "public, max-age=300");
     res.send(playlist);
+    console.log(`[hls] ─── Done: ${shortUrl} | total=${Date.now() - t0}ms`);
   } catch (err) {
-    console.error(`[/api/proxy/hls] Error proxying ${targetUrl}:`, err.message);
+    console.error(`[hls] ❌ Error proxying ${shortUrl}: ${err.message} | t+${Date.now() - t0}ms`);
     if (!res.headersSent) {
       res.status(502).send("Failed to fetch HLS playlist");
     }
@@ -358,19 +384,25 @@ app.get("/api/pinterest/feed", async (req, res) => {
 // ─── LEGACY ENDPOINTS (Updated to use Proxy for speed) ─────────────────────
 
 app.get("/api/pins/random", async (req, res) => {
+  const t0 = Date.now();
+  console.log(`[random] ─── Request received: t=${t0}`);
   try {
-    console.log("[/api/pins/random] Fetching from batch cache...");
     let pins = [];
     if (currentBatchId) {
       try {
+        console.log(`[random] Firestore query started (batch: ${currentBatchId}): t+${Date.now() - t0}ms`);
         pins = await db.getPinsByBatch(currentBatchId);
+        console.log(`[random] [firestore] Query took: ${Date.now() - t0}ms | returned ${pins.length} pins`);
       } catch (e) {
-        console.warn("[/api/pins/random] Failed to fetch batch:", e.message);
+        console.warn("[random] Failed to fetch batch:", e.message);
       }
     }
     
     if (pins.length === 0) {
+      const t1 = Date.now();
+      console.log(`[random] Firestore getAllPins started: t+${t1 - t0}ms`);
       pins = await db.getAllPins();
+      console.log(`[random] [firestore] getAllPins took: ${Date.now() - t1}ms | returned ${pins.length} pins`);
     }
     
     // Fisher-Yates shuffle
@@ -379,9 +411,10 @@ app.get("/api/pins/random", async (req, res) => {
       [pins[i], pins[j]] = [pins[j], pins[i]];
     }
     
+    console.log(`[random] Shuffle done, sending response: t+${Date.now() - t0}ms | ${pins.length} pins`);
     res.json({ success: true, count: pins.length, pins });
   } catch (err) {
-    console.error("[/api/pins/random] Error:", err.message);
+    console.error("[random] Error:", err.message);
     res.json({ success: false, error: err.message });
   }
 });
@@ -431,27 +464,85 @@ app.get("/api/pins/search", async (req, res) => {
   }
 });
 
-// GET /api/pins/details?url=pinUrl
+// GET /api/pins/details?url=pinUrl&relatedOnly=true (optional)
 app.get("/api/pins/details", async (req, res) => {
+  const t0 = Date.now();
   const pinUrl = req.query.url;
+  const relatedOnly = req.query.relatedOnly === "true";
   if (!pinUrl) return res.status(400).json({ success: false, error: "Missing ?url= parameter" });
 
+  const pinId = pinUrl.split("/pin/")[1]?.replace(/\//g, "");
+
+  // ── relatedOnly mode: return cached related or random pins INSTANTLY ─────
+  if (relatedOnly) {
+    console.log(`[details] ─── relatedOnly request for: ${pinId}`);
+    try {
+      const allCached = await db.getAllPins();
+      const cached = allCached.find(p => p.pinUrl === pinUrl);
+
+      // 1. If we have real related pins cached → serve them
+      if (cached && cached.relatedPins && cached.relatedPins.length > 0) {
+        console.log(`[details] relatedOnly: serving ${cached.relatedPins.length} cached related pins`);
+        return res.json({ success: true, related: cached.relatedPins });
+      }
+
+      // 2. No cached related → return random pins from DB INSTANTLY
+      //    (don't wait 30s for Playwright to search)
+      const otherPins = allCached
+        .filter(p => p.pinUrl !== pinUrl && p.thumbnail)
+        .map(p => ({ pinUrl: p.pinUrl, thumbnail: p.thumbnail, title: p.title || 'Pinterest Video', author: p.author || 'Pinterest' }));
+      
+      // Shuffle and pick 12
+      for (let i = otherPins.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [otherPins[i], otherPins[j]] = [otherPins[j], otherPins[i]];
+      }
+      const instantRelated = otherPins.slice(0, 12);
+      console.log(`[details] relatedOnly: no cache, returning ${instantRelated.length} random DB pins instantly`);
+      res.json({ success: true, related: instantRelated });
+
+      // 3. Fire-and-forget: fetch REAL related pins in background for next time
+      const title = cached?.title || "aesthetic video";
+      fetchRelatedPins(title).then(related => {
+        if (related.length > 0 && cached) {
+          db.upsertPin(sanitizeForFirestore({ ...cached, relatedPins: related }));
+          console.log(`[details] [background] Cached ${related.length} real related pins for ${pinId}`);
+        }
+      }).catch(err => console.log(`[details] [background] Related fetch failed: ${err.message}`));
+      return;
+    } catch (err) {
+      console.error(`[details] relatedOnly error: ${err.message}`);
+      return res.json({ success: true, related: [] });
+    }
+  }
+
+  // ── Normal mode: fetch video data, return FAST, related in background ───
+  console.log(`[details] ─── Request received for: ${pinId} | t=${t0}`);
+
   try {
-    const pinId = pinUrl.split("/pin/")[1]?.replace(/\//g, "");
-    
     // 1. Check DB Cache first
+    console.log(`[details] Firestore lookup started: t+${Date.now() - t0}ms`);
     const allCached = await db.getAllPins();
+    const tFirestore = Date.now() - t0;
+    console.log(`[details] [firestore] Query took: ${tFirestore}ms | ${allCached.length} total pins`);
     const cached = allCached.find(p => p.pinUrl === pinUrl);
-    if (cached && cached.videoSrc) {
-      console.log(`[/api/pins/details] Serving from DB: ${pinId}`);
-      return res.json({ success: true, ...cached });
+    const cachedHasVideo = cached && cached.videoSrc;
+    const cachedIsHls = cachedHasVideo && cached.videoSrc.includes('.m3u8');
+    console.log(`[details] Firestore result: ${cachedHasVideo ? (cachedIsHls ? 'CACHE HIT (HLS — stale, re-fetching MP4)' : 'CACHE HIT (MP4)') : cached ? 'CACHE HIT (no videoSrc)' : 'CACHE MISS'} | t+${Date.now() - t0}ms`);
+    if (cachedHasVideo && !cachedIsHls) {
+      console.log(`[details] Sending cached MP4 response: t+${Date.now() - t0}ms`);
+      // Include cached relatedPins if available
+      const related = cached.relatedPins || [];
+      return res.json({ success: true, ...cached, related });
     }
 
-    // 2. Try Proxy (FAST)
+    // 2. Try Pinterest API (FAST)
     if (pinId) {
       try {
-        console.log(`[/api/pins/details] Fetching via Proxy: ${pinId}`);
+        const t1 = Date.now();
+        console.log(`[details] Pinterest API fetch started: t+${t1 - t0}ms`);
         const details = await fetchPinDetails(pinId);
+        console.log(`[details] Pinterest API returned: t+${Date.now() - t0}ms (took ${Date.now() - t1}ms)`);
         if (details && details.video_url) {
           const pinObj = sanitizeForFirestore({
             pinUrl,
@@ -462,16 +553,28 @@ app.get("/api/pins/details", async (req, res) => {
             scrapedAt: new Date().toISOString()
           });
           db.upsertPin(pinObj);
-          return res.json({ success: true, ...pinObj });
+          console.log(`[details] Sending API response FAST: t+${Date.now() - t0}ms`);
+          res.json({ success: true, ...pinObj, related: [] });
+
+          // Fire-and-forget: fetch related in background
+          fetchRelatedPins(pinObj.title).then(related => {
+            if (related.length > 0) {
+              db.upsertPin(sanitizeForFirestore({ ...pinObj, relatedPins: related }));
+              console.log(`[details] [background] Cached ${related.length} related pins for ${pinId}`);
+            }
+          }).catch(err => console.log(`[details] [background] Related failed silently: ${err.message}`));
+          return;
         }
       } catch (e) {
-        console.warn(`[/api/pins/details] Proxy failed for ${pinId}:`, e.message);
+        console.warn(`[details] Pinterest API failed for ${pinId}: ${e.message} | t+${Date.now() - t0}ms`);
       }
     }
 
-    // 3. Fallback to Scraper (yt-dlp with proxy support)
-    console.log(`[/api/pins/details] Falling back to Scraper: ${pinUrl}`);
+    // 3. Fallback to Scraper (yt-dlp — now FAST, no related pins blocking)
+    const tScraper = Date.now();
+    console.log(`[details] [scraper] Scraper triggered: true | t+${tScraper - t0}ms`);
     const details = await scrapePinDetails(pinUrl);
+    console.log(`[details] Scraper returned: t+${Date.now() - t0}ms (scraper took ${Date.now() - tScraper}ms)`);
     if (details.success) {
       const pinObj = sanitizeForFirestore({
         pinUrl,
@@ -482,12 +585,22 @@ app.get("/api/pins/details", async (req, res) => {
         scrapedAt: new Date().toISOString()
       });
       db.upsertPin(pinObj);
-      res.json({ ...details, ...pinObj, success: true });
+      console.log(`[details] Sending response FAST: t+${Date.now() - t0}ms`);
+      res.json({ ...details, ...pinObj, related: [], success: true });
+
+      // Fire-and-forget: fetch related in background
+      fetchRelatedPins(pinObj.title).then(related => {
+        if (related.length > 0) {
+          db.upsertPin(sanitizeForFirestore({ ...pinObj, relatedPins: related }));
+          console.log(`[details] [background] Cached ${related.length} related pins for ${pinId}`);
+        }
+      }).catch(err => console.log(`[details] [background] Related failed silently: ${err.message}`));
     } else {
+      console.log(`[details] Scraper failed, returning error: t+${Date.now() - t0}ms`);
       res.status(500).json(details);
     }
   } catch (err) {
-    console.error("[/api/pins/details] Global Error:", err.message);
+    console.error(`[details] Global Error: ${err.message} | t+${Date.now() - t0}ms`);
     res.status(500).json({ success: false, error: err.message });
   }
 });
@@ -673,6 +786,19 @@ app.get("*", (req, res) => {
   res.sendFile(path.join(__dirname, "../frontend/public/index.html"));
 });
 
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`\n🚀 Pinterest Video Scraper running at http://localhost:${PORT}\n`);
+
+  // ─── STARTUP CDN PING TEST ─────────────────────────────────────────────
+  try {
+    const pingUrl = 'https://i.pinimg.com/originals/78/7f/de/787fde77fc71b2d30724ccf1a225bdad.jpg';
+    const t0 = Date.now();
+    const resp = await axios.head(pingUrl, {
+      timeout: 10000,
+      headers: { ...PINTEREST_HEADERS },
+    });
+    console.log(`[startup] CDN ping: ${Date.now() - t0}ms | status=${resp.status}`);
+  } catch (e) {
+    console.log(`[startup] CDN ping: FAILED (${e.message})`);
+  }
 });

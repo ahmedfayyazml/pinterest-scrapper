@@ -1091,6 +1091,19 @@
     const detailView = document.getElementById('detailView');
     const playerWrap = document.getElementById('detailPlayer');
     
+    // ── CLEANUP: Stop previous video/audio before loading new one ──
+    const oldVideo = playerWrap.querySelector('video');
+    if (oldVideo) {
+      oldVideo.pause();
+      oldVideo.removeAttribute('src');
+      oldVideo.load(); // force release of media resources
+    }
+    // Destroy any active HLS.js instance
+    if (window._activeHls) {
+      try { window._activeHls.destroy(); } catch(e) {}
+      window._activeHls = null;
+    }
+    
     // Reset View
     playerWrap.innerHTML = '<div class="spinner" style="margin-top:20% !important"></div>';
     document.getElementById('detailTitle').textContent = 'Loading...';
@@ -1100,80 +1113,108 @@
     window.scrollTo(0, 0);
 
     try {
+      const tFetch = performance.now();
+      console.log(`[player] ─── Fetching pin details: ${pinUrl} | t=${tFetch.toFixed(0)}ms`);
       const res = await fetch(`${API}/pins/details?url=${encodeURIComponent(pinUrl)}`);
       const data = await res.json();
+      const tData = performance.now();
+      console.log(`[player] API response received: t+${(tData - tFetch).toFixed(0)}ms | success=${data.success} | hasVideoSrc=${!!data.videoSrc}`);
       
       if (!data.success) throw new Error(data.error);
 
-      // Render Player — 3-Tier Hybrid Playback Strategy
-      // Tier 1: Direct CDN (SW injects headers) → Tier 2: VPS pipe → Tier 3: SOCKS5 proxy
-      const posterDirect = data.thumbnail || '';
+      // Render Player — 2-Tier Playback (skip Tier 1 for videos)
+      // Service Workers CANNOT set Referer/Origin headers (browser forbidden headers),
+      // so direct CDN always fails for videos. Start at Tier 2 immediately.
+      // Tier 2: VPS pipe (fast, no proxy cost) → Tier 3: SOCKS5 proxy (last resort)
+      const posterUrl = tier2Url(data.thumbnail || '');
       if (data.videoSrc) {
         const isHls = data.videoSrc.includes('.m3u8');
+        console.log(`[player] Video type: ${isHls ? 'HLS (.m3u8)' : 'MP4'}`);
+        console.log(`[player] Raw videoSrc: ${data.videoSrc.substring(0, 80)}...`);
 
         if (isHls && Hls.isSupported()) {
-          // ── HLS 3-Tier ─────────────────────────────────────────────
-          playerWrap.innerHTML = `<video id="hlsVideo" controls autoplay loop playsinline poster="${posterDirect}" style="width:100%"></video>`;
+          // ── HLS: Tier 2 → Tier 3 ──────────────────────────────────
+          playerWrap.innerHTML = `<video id="hlsVideo" controls autoplay loop playsinline poster="${posterUrl}" style="width:100%"></video>`;
           const videoEl = document.getElementById('hlsVideo');
+          let hlsTier = 2;
 
-          // Tier 1: Try direct HLS (SW adds headers to segment fetches)
-          let currentTier = 1;
+          // Video element lifecycle events
+          videoEl.addEventListener('loadedmetadata', () => console.log(`[player] loadedmetadata: t+${(performance.now() - tFetch).toFixed(0)}ms`));
+          videoEl.addEventListener('canplay', () => console.log(`[player] canplay event fired: t+${(performance.now() - tFetch).toFixed(0)}ms`));
+          videoEl.addEventListener('playing', () => console.log(`[player] playing event fired: t+${(performance.now() - tFetch).toFixed(0)}ms`));
+          videoEl.addEventListener('loadeddata', () => console.log(`[player] First frame rendered: t+${(performance.now() - tFetch).toFixed(0)}ms`));
+          videoEl.addEventListener('waiting', () => console.log(`[player] ⏳ buffering: t+${(performance.now() - tFetch).toFixed(0)}ms`));
+          videoEl.addEventListener('stalled', () => console.log(`[player] ⚠️ stalled: t+${(performance.now() - tFetch).toFixed(0)}ms`));
+
           let hls = new Hls();
-          hls.loadSource(directUrl(data.videoSrc));
+          window._activeHls = hls;
+          const hlsSrc = tier2Hls(data.videoSrc);
+          console.log(`[hls.js] Hls instance created: t+${(performance.now() - tFetch).toFixed(0)}ms`);
+          console.log(`[player] HLS starting at Tier 2 (VPS pipe)`);
+          console.log(`[player] Video src set: ${hlsSrc.substring(0, 100)}... | t+${(performance.now() - tFetch).toFixed(0)}ms`);
+          hls.loadSource(hlsSrc);
           hls.attachMedia(videoEl);
 
+          hls.on(Hls.Events.MANIFEST_PARSED, (ev, data) => {
+            console.log(`[hls.js] MANIFEST_PARSED: ${data.levels.length} quality levels | t+${(performance.now() - tFetch).toFixed(0)}ms`);
+          });
+          let firstFrag = true;
+          hls.on(Hls.Events.FRAG_LOADED, (ev, data) => {
+            if (firstFrag) {
+              console.log(`[hls.js] FRAG_LOADED first fragment: size=${(data.frag.stats?.total || 0)} bytes | t+${(performance.now() - tFetch).toFixed(0)}ms`);
+              firstFrag = false;
+            }
+          });
+
           hls.on(Hls.Events.ERROR, function(event, errData) {
+            console.log(`[hls.js] ERROR: type=${errData.type} details=${errData.details} fatal=${errData.fatal} | t+${(performance.now() - tFetch).toFixed(0)}ms`);
             if (errData.fatal) {
               hls.destroy();
-              if (currentTier === 1) {
-                // Tier 2: VPS pipe HLS
-                currentTier = 2;
-                console.log('[player] HLS Tier 1 failed, trying Tier 2 (VPS pipe)');
+              if (hlsTier === 2) {
+                hlsTier = 3;
+                console.log('[player] HLS Tier 2 failed, trying Tier 3 (SOCKS5)');
                 hls = new Hls();
-                hls.loadSource(tier2Hls(data.videoSrc));
+                hls.loadSource(tier3Hls(data.videoSrc));
                 hls.attachMedia(videoEl);
-                hls.on(Hls.Events.ERROR, function(ev2, err2) {
-                  if (err2.fatal) {
+                hls.on(Hls.Events.ERROR, function(ev3, err3) {
+                  if (err3.fatal) {
                     hls.destroy();
-                    if (currentTier === 2) {
-                      // Tier 3: SOCKS5 proxy HLS
-                      currentTier = 3;
-                      console.log('[player] HLS Tier 2 failed, trying Tier 3 (SOCKS5)');
-                      hls = new Hls();
-                      hls.loadSource(tier3Hls(data.videoSrc));
-                      hls.attachMedia(videoEl);
-                      hls.on(Hls.Events.ERROR, function(ev3, err3) {
-                        if (err3.fatal) {
-                          hls.destroy();
-                          showVideoUnavailable(playerWrap, pinUrl);
-                        }
-                      });
-                    }
+                    showVideoUnavailable(playerWrap, pinUrl);
                   }
                 });
               }
             }
           });
         } else {
-          // ── MP4 3-Tier ──────────────────────────────────────────────
-          playerWrap.innerHTML = `<video id="mp4Video" controls autoplay loop playsinline poster="${posterDirect}" style="width:100%"></video>`;
+          // ── MP4: Tier 2 → Tier 3 ───────────────────────────────────
+          playerWrap.innerHTML = `<video id="mp4Video" controls autoplay loop playsinline poster="${posterUrl}" style="width:100%"></video>`;
           const videoEl = document.getElementById('mp4Video');
-          let mp4Tier = 1;
+          let mp4Tier = 2;
+
+          // Video element lifecycle events
+          videoEl.addEventListener('loadedmetadata', () => console.log(`[player] loadedmetadata: t+${(performance.now() - tFetch).toFixed(0)}ms`));
+          videoEl.addEventListener('canplay', () => console.log(`[player] canplay event fired: t+${(performance.now() - tFetch).toFixed(0)}ms`));
+          videoEl.addEventListener('playing', () => console.log(`[player] playing event fired: t+${(performance.now() - tFetch).toFixed(0)}ms`));
+          videoEl.addEventListener('loadeddata', () => console.log(`[player] First frame rendered: t+${(performance.now() - tFetch).toFixed(0)}ms`));
+          videoEl.addEventListener('waiting', () => console.log(`[player] ⏳ buffering: t+${(performance.now() - tFetch).toFixed(0)}ms`));
+          videoEl.addEventListener('stalled', () => console.log(`[player] ⚠️ stalled: t+${(performance.now() - tFetch).toFixed(0)}ms`));
 
           function tryMp4Tier(tier) {
             mp4Tier = tier;
             let src;
-            if (tier === 1) src = directUrl(data.videoSrc);
-            else if (tier === 2) src = tier2Url(data.videoSrc);
+            if (tier === 2) src = tier2Url(data.videoSrc);
             else if (tier === 3) src = tier3Url(data.videoSrc);
             else { showVideoUnavailable(playerWrap, pinUrl); return; }
 
             console.log(`[player] MP4 trying Tier ${tier}`);
+            console.log(`[player] Video src set: ${src.substring(0, 100)}... | t+${(performance.now() - tFetch).toFixed(0)}ms`);
             videoEl.src = src;
             videoEl.load();
+            console.log(`[player] Waiting for metadata: t+${(performance.now() - tFetch).toFixed(0)}ms`);
           }
 
           videoEl.addEventListener('error', function() {
+            console.log(`[player] ❌ MP4 Tier ${mp4Tier} error | t+${(performance.now() - tFetch).toFixed(0)}ms`);
             if (mp4Tier < 3) {
               tryMp4Tier(mp4Tier + 1);
             } else {
@@ -1181,11 +1222,12 @@
             }
           }, true);
 
-          // Start with Tier 1
-          tryMp4Tier(1);
+          // Start at Tier 2 directly
+          tryMp4Tier(2);
         }
         document.getElementById('detailDownload').style.display = 'flex';
       } else {
+        console.log(`[player] ⚠️ No videoSrc in response`);
         showVideoUnavailable(playerWrap, pinUrl);
         document.getElementById('detailDownload').style.display = 'none';
       }
@@ -1205,8 +1247,51 @@
       document.getElementById('detailDate').textContent = data.uploadDate || 'Recently';
       document.getElementById('detailDescription').textContent = data.description || 'No description available.';
       
-      // Related
-      renderPins(data.related, false, 'relatedGrid');
+      // Related pins — serve from cache instantly or fetch async
+      const relatedGrid = document.getElementById('relatedGrid');
+      if (data.related && data.related.length > 0) {
+        // Cache hit: render immediately
+        console.log(`[player] Related pins from cache: ${data.related.length}`);
+        renderPins(data.related, false, 'relatedGrid');
+      } else {
+        // No related yet: show skeleton + auto-fetch in background
+        console.log(`[player] No related pins yet, showing skeleton and fetching async`);
+        relatedGrid.innerHTML = `
+          <div class="related-loading" style="grid-column: 1/-1; text-align:center; padding: 40px 0;">
+            <div class="spinner" style="margin: 0 auto 12px"></div>
+            <p style="color:var(--muted); font-size: 0.85rem;">Loading related videos...</p>
+          </div>
+        `;
+
+        // Auto-fetch related pins in background
+        fetch(`${API}/pins/details?url=${encodeURIComponent(pinUrl)}&relatedOnly=true`)
+          .then(r => r.json())
+          .then(relData => {
+            if (relData.success && relData.related && relData.related.length > 0) {
+              console.log(`[player] Related pins loaded async: ${relData.related.length}`);
+              renderPins(relData.related, false, 'relatedGrid');
+            } else {
+              relatedGrid.innerHTML = `
+                <div style="grid-column: 1/-1; text-align:center; padding: 30px 0;">
+                  <p style="color:var(--muted); font-size: 0.85rem; margin-bottom: 12px;">No related videos found</p>
+                  <button class="btn btn-ghost" onclick="
+                    this.parentElement.parentElement.innerHTML='<div class=\\'spinner\\' style=\\'margin:20px auto\\'></div>';
+                    fetch('${API}/pins/details?url=${encodeURIComponent(pinUrl)}&relatedOnly=true')
+                      .then(r=>r.json())
+                      .then(d=>{if(d.related&&d.related.length)renderPins(d.related,false,'relatedGrid');else document.getElementById('relatedGrid').innerHTML='<p style=\\'grid-column:1/-1;text-align:center;color:var(--muted);padding:30px 0\\'>No related videos available</p>'})
+                  ">🔄 Try Again</button>
+                </div>
+              `;
+            }
+          })
+          .catch(() => {
+            relatedGrid.innerHTML = `
+              <div style="grid-column: 1/-1; text-align:center; padding: 30px 0;">
+                <p style="color:var(--muted); font-size: 0.85rem;">Could not load related videos</p>
+              </div>
+            `;
+          });
+      }
       
       toast('Video details loaded');
     } catch (err) {

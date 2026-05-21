@@ -7,6 +7,11 @@ const axios = require("axios");
 const { scrape200Pins, scrapePinDetails } = require("./scraper");
 const { searchVideos, getCategoryFeed, fetchPinDetails } = require("./pinterest");
 const db = require("./db");
+const proxyManager = require("./proxyManager");
+
+// Lazy-load socks-proxy-agent only when actually needed (Tier 3)
+let SocksProxyAgent;
+try { SocksProxyAgent = require("socks-proxy-agent").SocksProxyAgent; } catch(e) { /* installed later */ }
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -29,14 +34,59 @@ function sanitizeForFirestore(obj) {
   return clean;
 }
 
-// ─── MEDIA PROXY — Streams Pinterest CDN content through our server ────────
-// This is the KEY fix: Pinterest blocks direct hotlinking from non-Pinterest
-// domains. By proxying through our server with the correct Referer header,
-// the browser never talks to Pinterest directly, so no blocking occurs.
+// ─── MEDIA PROXY — Hybrid Tier 2 / Tier 3 ──────────────────────────────────
+// Tier 2 (default): VPS direct pipe — streams through our server with
+//   injected Referer/Origin headers, NO SOCKS5 proxy bandwidth used.
+// Tier 3 (forceProxy=true): Last resort — routes via the residential
+//   SOCKS5 proxy, counts against the 8/day limit.
+
+const PINTEREST_HEADERS = {
+  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+  "Referer": "https://www.pinterest.com/",
+  "Origin": "https://www.pinterest.com",
+  "Accept": "*/*",
+  "Accept-Language": "en-US,en;q=0.9",
+  "Sec-Fetch-Dest": "video",
+  "Sec-Fetch-Mode": "no-cors",
+  "Sec-Fetch-Site": "cross-site",
+};
+
+function buildAxiosOpts(forceProxy, isStream = true) {
+  const opts = {
+    timeout: 30000,
+    headers: { ...PINTEREST_HEADERS },
+  };
+  if (isStream) opts.responseType = "stream";
+
+  if (forceProxy) {
+    // Use HTTP proxy mode for axios (Proxy Cheap supports HTTP on :8080)
+    // Parse credentials from the SOCKS5 URL and build an HTTP proxy config
+    const proxyUrl = proxyManager.getProxyUrl();
+    if (proxyUrl) {
+      try {
+        // proxyUrl is like socks5://user:pass@host:port — extract parts
+        const parsed = new URL(proxyUrl.replace(/^socks5:\/\//, "http://"));
+        opts.proxy = {
+          host: parsed.hostname,
+          port: parseInt(parsed.port),
+          auth: parsed.username ? {
+            username: decodeURIComponent(parsed.username),
+            password: decodeURIComponent(parsed.password),
+          } : undefined,
+        };
+      } catch (e) {
+        console.warn("[buildAxiosOpts] Failed to parse proxy URL:", e.message);
+      }
+    }
+  }
+  return opts;
+}
 
 app.get("/api/proxy/media", async (req, res) => {
   const targetUrl = req.query.url;
   if (!targetUrl) return res.status(400).send("Missing ?url=");
+
+  const forceProxy = req.query.forceProxy === "true";
 
   // Only allow proxying Pinterest CDN domains
   const allowed = ["pinimg.com", "pinterest.com"];
@@ -49,30 +99,28 @@ app.get("/api/proxy/media", async (req, res) => {
     return res.status(400).send("Invalid URL");
   }
 
+  // Tier 3 gate: check quota before using the expensive proxy
+  if (forceProxy) {
+    if (!proxyManager.canUseProxy()) {
+      return res.status(429).json({
+        error: "Proxy limit reached for today",
+        ...proxyManager.getStatus(),
+      });
+    }
+    proxyManager.useProxy();
+    console.log(`[/api/proxy/media] Tier 3 (SOCKS5 proxy) for: ${targetUrl}`);
+  } else {
+    console.log(`[/api/proxy/media] Tier 2 (VPS direct pipe) for: ${targetUrl}`);
+  }
+
   try {
-    const response = await axios.get(targetUrl, {
-      responseType: "stream",
-      timeout: 30000,
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-        "Referer": "https://www.pinterest.com/",
-        "Origin": "https://www.pinterest.com",
-        "Accept": "*/*",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Sec-Fetch-Dest": "video",
-        "Sec-Fetch-Mode": "no-cors",
-        "Sec-Fetch-Site": "cross-site",
-      },
-    });
+    const response = await axios.get(targetUrl, buildAxiosOpts(forceProxy, true));
 
     // Forward content headers
     const ct = response.headers["content-type"];
     if (ct) res.setHeader("Content-Type", ct);
-
     const cl = response.headers["content-length"];
     if (cl) res.setHeader("Content-Length", cl);
-
-    // Allow range requests for video seeking
     const cr = response.headers["content-range"];
     if (cr) res.setHeader("Content-Range", cr);
     const ar = response.headers["accept-ranges"];
@@ -91,21 +139,30 @@ app.get("/api/proxy/media", async (req, res) => {
   }
 });
 
-// HLS .m3u8 proxy — rewrites segment URLs inside the playlist so the
-// browser fetches all chunks through our proxy too
+// HLS .m3u8 proxy — rewrites segment URLs inside the playlist
+// Supports forceProxy param for Tier 3 fallback
 app.get("/api/proxy/hls", async (req, res) => {
   const targetUrl = req.query.url;
   if (!targetUrl) return res.status(400).send("Missing ?url=");
 
+  const forceProxy = req.query.forceProxy === "true";
+
+  // Tier 3 gate
+  if (forceProxy) {
+    if (!proxyManager.canUseProxy()) {
+      return res.status(429).json({
+        error: "Proxy limit reached for today",
+        ...proxyManager.getStatus(),
+      });
+    }
+    proxyManager.useProxy();
+    console.log(`[/api/proxy/hls] Tier 3 (SOCKS5 proxy) for: ${targetUrl}`);
+  } else {
+    console.log(`[/api/proxy/hls] Tier 2 (VPS direct) for: ${targetUrl}`);
+  }
+
   try {
-    const response = await axios.get(targetUrl, {
-      timeout: 15000,
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-        "Referer": "https://www.pinterest.com/",
-        "Origin": "https://www.pinterest.com",
-      },
-    });
+    const response = await axios.get(targetUrl, buildAxiosOpts(forceProxy, false));
 
     let playlist = response.data;
 
@@ -117,6 +174,10 @@ app.get("/api/proxy/hls", async (req, res) => {
     const host = req.headers["x-forwarded-host"] || req.headers.host;
     const apiBase = `${proto}://${host}`;
 
+    // Propagate forceProxy flag into rewritten URLs so all segments
+    // also route through the SOCKS5 proxy if we're in Tier 3
+    const fpParam = forceProxy ? "&forceProxy=true" : "";
+
     // Rewrite every line that looks like a segment/variant URL
     playlist = playlist.split("\n").map(line => {
       line = line.trim();
@@ -125,7 +186,7 @@ app.get("/api/proxy/hls", async (req, res) => {
         if (line.includes('URI="')) {
           line = line.replace(/URI="([^"]+)"/g, (match, uri) => {
             const absUri = uri.startsWith("http") ? uri : baseUrl + uri;
-            return `URI="${apiBase}/api/proxy/media?url=${encodeURIComponent(absUri)}"`;
+            return `URI="${apiBase}/api/proxy/media?url=${encodeURIComponent(absUri)}${fpParam}"`;
           });
         }
         return line;
@@ -133,9 +194,9 @@ app.get("/api/proxy/hls", async (req, res) => {
       // It's a URL line (segment or sub-playlist)
       const absUrl = line.startsWith("http") ? line : baseUrl + line;
       if (absUrl.endsWith(".m3u8")) {
-        return `${apiBase}/api/proxy/hls?url=${encodeURIComponent(absUrl)}`;
+        return `${apiBase}/api/proxy/hls?url=${encodeURIComponent(absUrl)}${fpParam}`;
       }
-      return `${apiBase}/api/proxy/media?url=${encodeURIComponent(absUrl)}`;
+      return `${apiBase}/api/proxy/media?url=${encodeURIComponent(absUrl)}${fpParam}`;
     }).join("\n");
 
     res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
@@ -509,10 +570,10 @@ app.post("/api/download", async (req, res) => {
     // Build yt-dlp arguments
     const args = ["-o", "-"];
 
-    // Add proxy if available
-    const proxyUrl = process.env.PROXY_URL;
-    if (proxyUrl) {
-      args.push("--proxy", proxyUrl);
+    // Add proxy if available and quota permits
+    if (proxyManager.canUseProxy()) {
+      args.push("--proxy", proxyManager.getProxyUrl());
+      proxyManager.useProxy();
     }
     
     // If quality or format is audio-only
@@ -582,7 +643,7 @@ app.get("/api/scrape/now", async (req, res) => {
   }
 });
 
-// GET /api/status ── 24-hour trigger status
+// GET /api/status ── 24-hour trigger status + proxy quota
 app.get("/api/status", (req, res) => {
   let nextScrapeIn = "Unknown";
   if (lastScrapedTime) {
@@ -602,7 +663,8 @@ app.get("/api/status", (req, res) => {
     lastScraped: lastScrapedTime,
     totalPins: totalPinsInBatch,
     nextScrapeIn: nextScrapeIn,
-    currentBatchId: currentBatchId
+    currentBatchId: currentBatchId,
+    proxy: proxyManager.getStatus(),
   });
 });
 

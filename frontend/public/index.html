@@ -915,21 +915,51 @@
     ? 'http://localhost:3001/api' 
     : window.location.origin + '/pinterest/api';
 
-  // ── MEDIA PROXY HELPERS ─────────────────────────────────────────────────
-  // Route ALL Pinterest CDN media through our server to bypass hotlink blocks
+  // ── SERVICE WORKER REGISTRATION (Tier 1) ─────────────────────────────────
+  // The SW intercepts pinimg.com requests and injects Referer/Origin headers
+  // so the browser loads Pinterest media directly without server proxying.
 
-  function proxyUrl(url) {
-    if (!url) return url;
-    // Only proxy pinimg.com / pinterest.com URLs
-    if (url.includes('pinimg.com') || url.includes('pinterest.com')) {
-      return `${API}/proxy/media?url=${encodeURIComponent(url)}`;
-    }
-    return url;
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/pinterest/sw.js', { scope: '/pinterest/' })
+      .then(reg => console.log('[SW] Registered:', reg.scope))
+      .catch(err => console.warn('[SW] Registration failed:', err));
   }
 
-  function proxyHls(url) {
+  // ── MEDIA URL HELPERS ───────────────────────────────────────────────────
+  // Tier 1: Return direct CDN URL (Service Worker adds headers in-flight)
+  // Tier 2: /api/proxy/media (VPS pipe, no SOCKS5)
+  // Tier 3: /api/proxy/media?forceProxy=true (SOCKS5, counts against 8/day)
+
+  function directUrl(url) {
+    return url; // Tier 1 — SW handles the header injection
+  }
+
+  function tier2Url(url) {
+    if (!url) return url;
+    return `${API}/proxy/media?url=${encodeURIComponent(url)}`;
+  }
+
+  function tier3Url(url) {
+    if (!url) return url;
+    return `${API}/proxy/media?url=${encodeURIComponent(url)}&forceProxy=true`;
+  }
+
+  function tier2Hls(url) {
     if (!url) return url;
     return `${API}/proxy/hls?url=${encodeURIComponent(url)}`;
+  }
+
+  function tier3Hls(url) {
+    if (!url) return url;
+    return `${API}/proxy/hls?url=${encodeURIComponent(url)}&forceProxy=true`;
+  }
+
+  // For thumbnails in cards: try direct first (SW injects headers), fall back to Tier 2
+  function thumbUrl(url) {
+    if (!url) return url;
+    // Always return the direct URL; the SW handles the header injection.
+    // The <img> onerror handler falls back to Tier 2 if SW fails.
+    return url;
   }
 
   // ── UTILS ──────────────────────────────────────────────────────────────
@@ -978,7 +1008,15 @@
     document.getElementById('gridWrap').style.display = 'block';
   }
 
-  // ── (Categories removed) ─────────────────────────────────────────────────
+  function showVideoUnavailable(playerWrap, pinUrl) {
+    playerWrap.innerHTML = `
+      <div style="height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:16px; padding:20px; text-align:center">
+        <span style="font-size:3rem">⚠️</span>
+        <p style="color:var(--muted)">Video temporarily unavailable. Try again later.</p>
+        <a href="${pinUrl}" target="_blank" class="btn btn-ghost">View on Pinterest</a>
+      </div>
+    `;
+  }
 
   // ── CARD BUILDER ────────────────────────────────────────────────────────
 
@@ -996,11 +1034,12 @@
     const title = pin.title || 'Pinterest Video Pin';
     const author = pin.uploader || pin.author || 'Pinterest';
     const rawThumb = pin.thumbnail || 'https://via.placeholder.com/220x300/0d1119/5a6480?text=No+Image';
-    const thumb = proxyUrl(rawThumb);
+    const thumb = thumbUrl(rawThumb);
+    const thumbFallback = tier2Url(rawThumb);
 
     div.innerHTML = `
       <div class="card-thumb">
-        <img src="${thumb}" alt="${title}" loading="lazy" onerror="this.src='https://via.placeholder.com/220x300/0d1119/5a6480?text=📌'"/>
+        <img src="${thumb}" alt="${title}" loading="lazy" onerror="if(!this.dataset.retried){this.dataset.retried='1';this.src='${thumbFallback}'}else{this.src='https://via.placeholder.com/220x300/0d1119/5a6480?text=📌'}"/>
         <div class="play-badge"><div class="play-icon"></div>VIDEO</div>
       </div>
       <div class="card-body">
@@ -1066,32 +1105,88 @@
       
       if (!data.success) throw new Error(data.error);
 
-      // Render Player — ALL media goes through our proxy to bypass hotlink blocks
-      const posterUrl = proxyUrl(data.thumbnail || '');
+      // Render Player — 3-Tier Hybrid Playback Strategy
+      // Tier 1: Direct CDN (SW injects headers) → Tier 2: VPS pipe → Tier 3: SOCKS5 proxy
+      const posterDirect = data.thumbnail || '';
       if (data.videoSrc) {
-        if (data.videoSrc.includes('.m3u8') && Hls.isSupported()) {
-          // HLS streams: proxy the playlist so segment URLs get rewritten too
-          const hlsProxied = proxyHls(data.videoSrc);
-          playerWrap.innerHTML = `<video id="hlsVideo" controls autoplay loop playsinline poster="${posterUrl}" style="width:100%"></video>`;
-          const hls = new Hls();
-          hls.loadSource(hlsProxied);
-          hls.attachMedia(document.getElementById('hlsVideo'));
+        const isHls = data.videoSrc.includes('.m3u8');
+
+        if (isHls && Hls.isSupported()) {
+          // ── HLS 3-Tier ─────────────────────────────────────────────
+          playerWrap.innerHTML = `<video id="hlsVideo" controls autoplay loop playsinline poster="${posterDirect}" style="width:100%"></video>`;
+          const videoEl = document.getElementById('hlsVideo');
+
+          // Tier 1: Try direct HLS (SW adds headers to segment fetches)
+          let currentTier = 1;
+          let hls = new Hls();
+          hls.loadSource(directUrl(data.videoSrc));
+          hls.attachMedia(videoEl);
+
+          hls.on(Hls.Events.ERROR, function(event, errData) {
+            if (errData.fatal) {
+              hls.destroy();
+              if (currentTier === 1) {
+                // Tier 2: VPS pipe HLS
+                currentTier = 2;
+                console.log('[player] HLS Tier 1 failed, trying Tier 2 (VPS pipe)');
+                hls = new Hls();
+                hls.loadSource(tier2Hls(data.videoSrc));
+                hls.attachMedia(videoEl);
+                hls.on(Hls.Events.ERROR, function(ev2, err2) {
+                  if (err2.fatal) {
+                    hls.destroy();
+                    if (currentTier === 2) {
+                      // Tier 3: SOCKS5 proxy HLS
+                      currentTier = 3;
+                      console.log('[player] HLS Tier 2 failed, trying Tier 3 (SOCKS5)');
+                      hls = new Hls();
+                      hls.loadSource(tier3Hls(data.videoSrc));
+                      hls.attachMedia(videoEl);
+                      hls.on(Hls.Events.ERROR, function(ev3, err3) {
+                        if (err3.fatal) {
+                          hls.destroy();
+                          showVideoUnavailable(playerWrap, pinUrl);
+                        }
+                      });
+                    }
+                  }
+                });
+              }
+            }
+          });
         } else {
-          // MP4: proxy the video URL directly
-          const videoProxied = proxyUrl(data.videoSrc);
-          playerWrap.innerHTML = `
-            <video src="${videoProxied}" controls autoplay loop playsinline poster="${posterUrl}"></video>
-          `;
+          // ── MP4 3-Tier ──────────────────────────────────────────────
+          playerWrap.innerHTML = `<video id="mp4Video" controls autoplay loop playsinline poster="${posterDirect}" style="width:100%"></video>`;
+          const videoEl = document.getElementById('mp4Video');
+          let mp4Tier = 1;
+
+          function tryMp4Tier(tier) {
+            mp4Tier = tier;
+            let src;
+            if (tier === 1) src = directUrl(data.videoSrc);
+            else if (tier === 2) src = tier2Url(data.videoSrc);
+            else if (tier === 3) src = tier3Url(data.videoSrc);
+            else { showVideoUnavailable(playerWrap, pinUrl); return; }
+
+            console.log(`[player] MP4 trying Tier ${tier}`);
+            videoEl.src = src;
+            videoEl.load();
+          }
+
+          videoEl.addEventListener('error', function() {
+            if (mp4Tier < 3) {
+              tryMp4Tier(mp4Tier + 1);
+            } else {
+              showVideoUnavailable(playerWrap, pinUrl);
+            }
+          }, true);
+
+          // Start with Tier 1
+          tryMp4Tier(1);
         }
         document.getElementById('detailDownload').style.display = 'flex';
       } else {
-        playerWrap.innerHTML = `
-          <div style="height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:16px; padding:20px; text-align:center">
-            <span style="font-size:3rem">⚠️</span>
-            <p style="color:var(--muted)">Could not extract video source. Try refreshing.</p>
-            <a href="${pinUrl}" target="_blank" class="btn btn-ghost">View on Pinterest</a>
-          </div>
-        `;
+        showVideoUnavailable(playerWrap, pinUrl);
         document.getElementById('detailDownload').style.display = 'none';
       }
 

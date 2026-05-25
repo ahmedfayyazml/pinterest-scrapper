@@ -545,6 +545,113 @@
       display: block;
     }
 
+    /* ── Quality Picker ────────────────────────────────────── */
+    .quality-picker {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      z-index: 20;
+    }
+
+    .quality-btn {
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
+      background: rgba(0,0,0,0.6);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      border: 1px solid rgba(255,255,255,0.15);
+      color: #fff;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.2s ease;
+      padding: 0;
+    }
+    .quality-btn:hover {
+      background: rgba(0,0,0,0.8);
+      transform: scale(1.1);
+    }
+    .quality-btn svg {
+      width: 18px;
+      height: 18px;
+      transition: transform 0.3s ease;
+    }
+    .quality-btn.active svg {
+      transform: rotate(90deg);
+    }
+
+    .quality-badge {
+      position: absolute;
+      top: -4px;
+      left: -4px;
+      background: var(--mint);
+      color: #000;
+      font-size: 0.55rem;
+      font-weight: 700;
+      padding: 1px 4px;
+      border-radius: 4px;
+      line-height: 1.2;
+      pointer-events: none;
+    }
+
+    .quality-menu {
+      position: absolute;
+      top: 44px;
+      right: 0;
+      background: rgba(15,15,20,0.92);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 12px;
+      overflow: hidden;
+      min-width: 130px;
+      opacity: 0;
+      transform: translateY(-8px) scale(0.95);
+      pointer-events: none;
+      transition: all 0.2s cubic-bezier(0.16,1,0.3,1);
+    }
+    .quality-menu.open {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+      pointer-events: all;
+    }
+
+    .quality-menu-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 16px;
+      color: rgba(255,255,255,0.75);
+      font-size: 0.8rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      border: none;
+      background: none;
+      width: 100%;
+      text-align: left;
+    }
+    .quality-menu-item:hover {
+      background: rgba(255,255,255,0.08);
+      color: #fff;
+    }
+    .quality-menu-item.active {
+      color: var(--mint);
+      font-weight: 700;
+    }
+    .quality-menu-item.active::after {
+      content: '✓';
+      font-size: 0.7rem;
+      margin-left: 8px;
+    }
+    .quality-menu-item .bitrate {
+      font-size: 0.65rem;
+      color: rgba(255,255,255,0.35);
+      margin-left: 8px;
+    }
+
     .detail-header {
       display: flex;
       justify-content: space-between;
@@ -1186,10 +1293,144 @@
             }
           });
         } else {
-          // ── MP4: Tier 2 → Tier 3 ───────────────────────────────────
-          playerWrap.innerHTML = `<video id="mp4Video" controls autoplay loop playsinline poster="${posterUrl}" style="width:100%"></video>`;
+          // ── MP4 with Quality Picker: Tier 2 → Tier 3 ──────────────
+          const qualities = data.qualities || [];
+          console.log(`[player] Qualities available: ${qualities.length > 0 ? qualities.map(q => q.label).join(', ') : 'none (single source)'}`);
+
+          // Build quality picker HTML
+          let pickerHtml = '';
+          if (qualities.length > 1) {
+            pickerHtml = `
+              <div class="quality-picker" id="qualityPicker">
+                <button class="quality-btn" id="qualityBtn" title="Video Quality">
+                  <span class="quality-badge" id="qualityBadge">AUTO</span>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
+                  </svg>
+                </button>
+                <div class="quality-menu" id="qualityMenu">
+                  <button class="quality-menu-item active" data-quality="auto">
+                    Auto
+                  </button>
+                  ${qualities.map(q => `
+                    <button class="quality-menu-item" data-quality="${q.height}" data-url="${q.url}">
+                      ${q.label}${q.tbr ? `<span class="bitrate">${q.tbr}kbps</span>` : ''}
+                    </button>
+                  `).join('')}
+                </div>
+              </div>
+            `;
+          }
+
+          playerWrap.innerHTML = `
+            <video id="mp4Video" controls autoplay loop playsinline poster="${posterUrl}" style="width:100%"></video>
+            ${pickerHtml}
+          `;
           const videoEl = document.getElementById('mp4Video');
           let mp4Tier = 2;
+          let currentQuality = 'auto'; // Track active quality
+          let userLockedQuality = false; // True if user manually picked a quality
+
+          // ── Auto quality selection based on connection speed ──
+          function pickAutoQuality() {
+            if (qualities.length === 0) return data.videoSrc;
+            const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+            const downlink = conn ? conn.downlink : 10; // Mbps, default to high if unknown
+            let pick;
+            if (downlink >= 5) {
+              pick = qualities[0]; // highest
+            } else if (downlink >= 2) {
+              pick = qualities.find(q => q.height <= 720) || qualities[qualities.length - 1];
+            } else if (downlink >= 1) {
+              pick = qualities.find(q => q.height <= 480) || qualities[qualities.length - 1];
+            } else {
+              pick = qualities[qualities.length - 1]; // lowest
+            }
+            console.log(`[player] Auto quality: ${pick.label} (downlink: ${downlink}Mbps)`);
+            return pick.url;
+          }
+
+          // ── Quality switch function ──
+          function switchQuality(qualityHeight, url) {
+            const wasPlaying = !videoEl.paused;
+            const currentTime = videoEl.currentTime;
+            currentQuality = qualityHeight;
+
+            let newSrc;
+            if (qualityHeight === 'auto') {
+              userLockedQuality = false;
+              newSrc = tier2Url(pickAutoQuality());
+            } else {
+              userLockedQuality = true;
+              newSrc = tier2Url(url);
+            }
+
+            console.log(`[player] Switching to quality: ${qualityHeight === 'auto' ? 'Auto' : qualityHeight + 'p'}`);
+            videoEl.src = newSrc;
+            videoEl.currentTime = currentTime;
+            if (wasPlaying) videoEl.play().catch(() => {});
+
+            // Update badge
+            const badge = document.getElementById('qualityBadge');
+            if (badge) {
+              if (qualityHeight === 'auto') {
+                badge.textContent = 'AUTO';
+              } else {
+                badge.textContent = qualityHeight + 'p';
+              }
+            }
+
+            // Update active state in menu
+            document.querySelectorAll('.quality-menu-item').forEach(item => {
+              item.classList.toggle('active', item.dataset.quality == qualityHeight);
+            });
+
+            // Close menu
+            const menu = document.getElementById('qualityMenu');
+            const btn = document.getElementById('qualityBtn');
+            if (menu) menu.classList.remove('open');
+            if (btn) btn.classList.remove('active');
+          }
+
+          // ── Wire up quality picker UI ──
+          if (qualities.length > 1) {
+            const qBtn = document.getElementById('qualityBtn');
+            const qMenu = document.getElementById('qualityMenu');
+
+            qBtn.addEventListener('click', (e) => {
+              e.stopPropagation();
+              const isOpen = qMenu.classList.contains('open');
+              qMenu.classList.toggle('open');
+              qBtn.classList.toggle('active');
+            });
+
+            // Click menu items
+            qMenu.querySelectorAll('.quality-menu-item').forEach(item => {
+              item.addEventListener('click', (e) => {
+                e.stopPropagation();
+                switchQuality(item.dataset.quality, item.dataset.url || '');
+              });
+            });
+
+            // Close on click outside
+            document.addEventListener('click', function closeQMenu(e) {
+              if (!e.target.closest('.quality-picker')) {
+                qMenu.classList.remove('open');
+                qBtn.classList.remove('active');
+              }
+            });
+
+            // Auto re-evaluate on connection change (only if user hasn't locked a quality)
+            const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+            if (conn) {
+              conn.addEventListener('change', () => {
+                if (!userLockedQuality) {
+                  console.log(`[player] Connection changed, re-evaluating auto quality`);
+                  switchQuality('auto', '');
+                }
+              });
+            }
+          }
 
           // Video element lifecycle events
           videoEl.addEventListener('loadedmetadata', () => console.log(`[player] loadedmetadata: t+${(performance.now() - tFetch).toFixed(0)}ms`));
@@ -1201,16 +1442,21 @@
 
           function tryMp4Tier(tier) {
             mp4Tier = tier;
+            let rawUrl;
+            if (qualities.length > 0 && !userLockedQuality) {
+              rawUrl = pickAutoQuality();
+            } else {
+              rawUrl = data.videoSrc;
+            }
+
             let src;
-            if (tier === 2) src = tier2Url(data.videoSrc);
-            else if (tier === 3) src = tier3Url(data.videoSrc);
+            if (tier === 2) src = tier2Url(rawUrl);
+            else if (tier === 3) src = tier3Url(rawUrl);
             else { showVideoUnavailable(playerWrap, pinUrl); return; }
 
-            console.log(`[player] MP4 trying Tier ${tier}`);
-            console.log(`[player] Video src set: ${src.substring(0, 100)}... | t+${(performance.now() - tFetch).toFixed(0)}ms`);
+            console.log(`[player] MP4 trying Tier ${tier} | quality: ${currentQuality}`);
             videoEl.src = src;
             videoEl.load();
-            console.log(`[player] Waiting for metadata: t+${(performance.now() - tFetch).toFixed(0)}ms`);
           }
 
           videoEl.addEventListener('error', function() {
@@ -1222,7 +1468,7 @@
             }
           }, true);
 
-          // Start at Tier 2 directly
+          // Start at Tier 2 with auto quality
           tryMp4Tier(2);
         }
         document.getElementById('detailDownload').style.display = 'flex';

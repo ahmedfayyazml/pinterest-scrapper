@@ -531,9 +531,10 @@ app.get("/api/pins/details", async (req, res) => {
     console.log(`[details] Firestore result: ${cachedHasVideo ? (cachedIsHls ? 'CACHE HIT (HLS — stale, re-fetching MP4)' : 'CACHE HIT (MP4)') : cached ? 'CACHE HIT (no videoSrc)' : 'CACHE MISS'} | t+${Date.now() - t0}ms`);
     if (cachedHasVideo && !cachedIsHls) {
       console.log(`[details] Sending cached MP4 response: t+${Date.now() - t0}ms`);
-      // Include cached relatedPins if available
+      // Include cached relatedPins and qualities if available
       const related = cached.relatedPins || [];
-      return res.json({ success: true, ...cached, related });
+      const qualities = cached.qualities || [];
+      return res.json({ success: true, ...cached, related, qualities });
     }
 
     // 2. Try Pinterest API (FAST)
@@ -554,7 +555,7 @@ app.get("/api/pins/details", async (req, res) => {
           });
           db.upsertPin(pinObj);
           console.log(`[details] Sending API response FAST: t+${Date.now() - t0}ms`);
-          res.json({ success: true, ...pinObj, related: [] });
+          res.json({ success: true, ...pinObj, qualities: [], related: [] });
 
           // Fire-and-forget: fetch related in background
           fetchRelatedPins(pinObj.title).then(related => {
@@ -576,17 +577,19 @@ app.get("/api/pins/details", async (req, res) => {
     const details = await scrapePinDetails(pinUrl);
     console.log(`[details] Scraper returned: t+${Date.now() - t0}ms (scraper took ${Date.now() - tScraper}ms)`);
     if (details.success) {
+      const qualities = details.qualities || [];
       const pinObj = sanitizeForFirestore({
         pinUrl,
         thumbnail: details.thumbnail || "",
         videoSrc: details.videoSrc || "",
+        qualities,
         title: details.title || "Pinterest Video",
         author: details.author || "Pinterest",
         scrapedAt: new Date().toISOString()
       });
       db.upsertPin(pinObj);
       console.log(`[details] Sending response FAST: t+${Date.now() - t0}ms`);
-      res.json({ ...details, ...pinObj, related: [], success: true });
+      res.json({ ...details, ...pinObj, qualities, related: [], success: true });
 
       // Fire-and-forget: fetch related in background
       fetchRelatedPins(pinObj.title).then(related => {

@@ -256,6 +256,7 @@ function fetchPinDetailsYTDLP(pinUrl) {
       try {
         const info = JSON.parse(stdout);
         let videoSrc = "";
+        let qualities = [];
         
         if (info.formats && info.formats.length > 0) {
           const allFormats = info.formats.filter(f => f.url);
@@ -284,6 +285,26 @@ function fetchPinDetailsYTDLP(pinUrl) {
             videoSrc = allFormats[0].url;
             console.log(`[scraper] WARNING: Only HLS available, using: ${allFormats[0].ext || 'hls'}`);
           }
+          
+          // Build qualities array from MP4 formats (deduplicated by height)
+          const seenHeights = new Set();
+          const qualitySource = mp4Formats.length > 0 ? mp4Formats : nonHlsFormats;
+          qualitySource
+            .filter(f => f.height)
+            .sort((a, b) => (b.height || 0) - (a.height || 0))
+            .forEach(f => {
+              const h = f.height;
+              if (!seenHeights.has(h)) {
+                seenHeights.add(h);
+                qualities.push({
+                  label: `${h}p`,
+                  height: h,
+                  tbr: Math.round(f.tbr || 0),
+                  url: f.url
+                });
+              }
+            });
+          console.log(`[scraper] Qualities available: ${qualities.map(q => q.label).join(', ') || 'none'}`);
         }
         
         if (!videoSrc) {
@@ -304,6 +325,7 @@ function fetchPinDetailsYTDLP(pinUrl) {
         resolve({
           success: true,
           videoSrc,
+          qualities,
           title: info.title || "Pinterest Video",
           description: info.description || "",
           author: info.uploader || "Pinterest User",

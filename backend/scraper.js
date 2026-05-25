@@ -286,25 +286,61 @@ function fetchPinDetailsYTDLP(pinUrl) {
             console.log(`[scraper] WARNING: Only HLS available, using: ${allFormats[0].ext || 'hls'}`);
           }
           
-          // Build qualities array from MP4 formats (deduplicated by height)
+          // Build qualities array — include HLS variants for quality switching
+          // HLS segments work fine through our VPS proxy with proper headers
           const seenHeights = new Set();
-          const qualitySource = mp4Formats.length > 0 ? mp4Formats : nonHlsFormats;
-          qualitySource
-            .filter(f => f.height)
+          
+          // Add direct MP4 first (most reliable)
+          if (mp4Formats.length > 0) {
+            const bestMp4 = mp4Formats.sort((a, b) => (b.height || 0) - (a.height || 0))[0];
+            if (bestMp4.height) {
+              const label = bestMp4.height >= 720 ? '720p' : `${bestMp4.height}p`;
+              seenHeights.add(bestMp4.height);
+              qualities.push({
+                label: label + ' (MP4)',
+                height: bestMp4.height,
+                tbr: Math.round(bestMp4.tbr || 0),
+                url: bestMp4.url,
+                protocol: 'mp4'
+              });
+            }
+          }
+          
+          // Add HLS variants (different qualities)
+          const hlsFormats = allFormats.filter(f => 
+            f.protocol === 'm3u8_native' || f.url?.includes('.m3u8')
+          );
+          const labelMap = { 240: '240p', 360: '360p', 416: '360p', 480: '480p', 640: '480p', 864: '720p', 1024: '720p', 1152: '720p', 1280: '720p' };
+          hlsFormats
+            .filter(f => f.height && f.tbr)
             .sort((a, b) => (b.height || 0) - (a.height || 0))
             .forEach(f => {
-              const h = f.height;
-              if (!seenHeights.has(h)) {
-                seenHeights.add(h);
-                qualities.push({
-                  label: `${h}p`,
-                  height: h,
-                  tbr: Math.round(f.tbr || 0),
-                  url: f.url
-                });
-              }
+              // Derive a user-friendly label from the URL width suffix
+              const widthMatch = f.url.match(/_(\d+)w\.m3u8/);
+              const w = widthMatch ? parseInt(widthMatch[1]) : null;
+              let label;
+              if (w === 240) label = '240p';
+              else if (w === 360) label = '360p';
+              else if (w === 480) label = '480p';
+              else if (w === 640) label = '720p';
+              else label = labelMap[f.height] || `${f.height}p`;
+              
+              // Skip if we already have this label
+              if (seenHeights.has(label)) return;
+              seenHeights.add(label);
+              
+              qualities.push({
+                label,
+                height: f.height,
+                tbr: Math.round(f.tbr || 0),
+                url: f.url,
+                protocol: 'hls'
+              });
             });
-          console.log(`[scraper] Qualities available: ${qualities.map(q => q.label).join(', ') || 'none'}`);
+          
+          // Sort: highest quality first
+          qualities.sort((a, b) => (b.height || 0) - (a.height || 0));
+          console.log(`[scraper] Qualities available: ${qualities.map(q => `${q.label}@${q.tbr}k[${q.protocol}]`).join(', ') || 'none'}`);
         }
         
         if (!videoSrc) {

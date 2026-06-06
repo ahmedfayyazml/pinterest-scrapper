@@ -311,6 +311,106 @@ async function runBatchScrape() {
 cron.schedule("0 * * * *", checkAndRunScraper);
 checkAndRunScraper();
 
+// ─── LINK REFRESH CRON ────────────────────────────────────────────────────
+// Runs every 90 minutes via setInterval. Re-fetches direct video URLs for
+// every pin in the current batch (Pinterest URLs expire ~1.5h).
+// NEVER uses the SOCKS5 proxy — always forceNoProxy=true.
+
+let linkRefreshLastRun = null;
+let linkRefreshNextRun = null;
+let linkRefreshIsRunning = false;
+let linkRefreshStats = { totalPins: 0, resolvedPins: 0, failedPins: 0, pendingPins: 0 };
+
+async function runLinkRefresh() {
+  if (linkRefreshIsRunning) {
+    console.log('[link-refresh] Already running — skipping this cycle.');
+    return;
+  }
+  linkRefreshIsRunning = true;
+  linkRefreshLastRun = new Date().toISOString();
+  // Schedule next run timestamp
+  linkRefreshNextRun = new Date(Date.now() + 90 * 60 * 1000).toISOString();
+
+  console.log('[link-refresh] ─── Starting link pre-fetch cycle...');
+
+  try {
+    // Fetch pins from current batch (or all pins if no batch yet)
+    let pins = [];
+    if (currentBatchId) {
+      pins = await db.getPinsByBatch(currentBatchId);
+    }
+    if (pins.length === 0) {
+      pins = await db.getAllPins();
+    }
+
+    const LINK_TTL_MS = 90 * 60 * 1000; // 90 minutes
+    const now = Date.now();
+
+    // Re-fetch ALL pins (overwrite even fresh ones to keep URLs valid)
+    const toRefresh = pins.filter(p => p.pinUrl);
+
+    linkRefreshStats.totalPins = toRefresh.length;
+    linkRefreshStats.resolvedPins = 0;
+    linkRefreshStats.failedPins = 0;
+    linkRefreshStats.pendingPins = toRefresh.length;
+
+    console.log(`[link-refresh] ${toRefresh.length} pins to refresh`);
+
+    const BATCH_SIZE = 10;
+    for (let i = 0; i < toRefresh.length; i += BATCH_SIZE) {
+      const batch = toRefresh.slice(i, i + BATCH_SIZE);
+
+      await Promise.all(batch.map(async (pin) => {
+        try {
+          // Always forceNoProxy — never burn the 8/day SOCKS5 quota here
+          const details = await scrapePinDetails(pin.pinUrl, { forceNoProxy: true });
+          if (details.success && details.videoSrc) {
+            await db.upsertPin(sanitizeForFirestore({
+              ...pin,
+              videoSrc: details.videoSrc,
+              qualities: details.qualities || [],
+              linksRefreshedAt: new Date().toISOString(),
+            }));
+            linkRefreshStats.resolvedPins++;
+            linkRefreshStats.pendingPins = Math.max(0, linkRefreshStats.pendingPins - 1);
+          } else {
+            linkRefreshStats.failedPins++;
+            linkRefreshStats.pendingPins = Math.max(0, linkRefreshStats.pendingPins - 1);
+            console.warn(`[link-refresh] Failed (no videoSrc): ${pin.pinUrl}`);
+          }
+        } catch (err) {
+          linkRefreshStats.failedPins++;
+          linkRefreshStats.pendingPins = Math.max(0, linkRefreshStats.pendingPins - 1);
+          console.warn(`[link-refresh] Error for ${pin.pinUrl}: ${err.message}`);
+        }
+      }));
+
+      const batchNum = Math.floor(i / BATCH_SIZE) + 1;
+      const totalBatches = Math.ceil(toRefresh.length / BATCH_SIZE);
+      console.log(`[link-refresh] Batch ${batchNum}/${totalBatches} done | Resolved: ${linkRefreshStats.resolvedPins}, Failed: ${linkRefreshStats.failedPins}`);
+
+      // Rate-limit: randomized delay between batches (skip after last batch)
+      if (i + BATCH_SIZE < toRefresh.length) {
+        const delay = 2500 + Math.random() * 1500; // 2500–4000ms
+        await new Promise(r => setTimeout(r, delay));
+      }
+    }
+
+    console.log(`[link-refresh] ─── Cycle complete | Resolved: ${linkRefreshStats.resolvedPins}/${linkRefreshStats.totalPins}, Failed: ${linkRefreshStats.failedPins}`);
+  } catch (err) {
+    console.error('[link-refresh] Fatal error during cycle:', err);
+  } finally {
+    linkRefreshIsRunning = false;
+  }
+}
+
+// Run immediately 5 minutes after startup (let batch scrape settle first),
+// then repeat every 90 minutes.
+setTimeout(() => {
+  runLinkRefresh();
+  setInterval(runLinkRefresh, 90 * 60 * 1000);
+}, 5 * 60 * 1000);
+
 // ─── HELPERS ───────────────────────────────────────────────────────────────
 
 function dbPinsToFeed(dbPins) {
@@ -526,10 +626,21 @@ app.get("/api/pins/details", async (req, res) => {
     const tFirestore = Date.now() - t0;
     console.log(`[details] [firestore] Query took: ${tFirestore}ms | ${allCached.length} total pins`);
     const cached = allCached.find(p => p.pinUrl === pinUrl);
+    // 2. Check freshness: treat cache as valid only if linksRefreshedAt is within 90 minutes
+    const LINK_TTL_MS = 90 * 60 * 1000;
     const cachedHasVideo = cached && cached.videoSrc;
     const cachedIsHls = cachedHasVideo && cached.videoSrc.includes('.m3u8');
-    console.log(`[details] Firestore result: ${cachedHasVideo ? (cachedIsHls ? 'CACHE HIT (HLS — stale, re-fetching MP4)' : 'CACHE HIT (MP4)') : cached ? 'CACHE HIT (no videoSrc)' : 'CACHE MISS'} | t+${Date.now() - t0}ms`);
-    if (cachedHasVideo && !cachedIsHls) {
+    const isExpired = !cached?.linksRefreshedAt ||
+      (Date.now() - new Date(cached.linksRefreshedAt).getTime()) > LINK_TTL_MS;
+
+    console.log(`[details] Firestore result: ${
+      cachedHasVideo
+        ? (cachedIsHls ? 'CACHE HIT (HLS — stale, re-fetching MP4)' : isExpired ? 'CACHE HIT (MP4 — expired, re-fetching)' : 'CACHE HIT (MP4 — fresh)')
+        : cached ? 'CACHE HIT (no videoSrc)' : 'CACHE MISS'
+    } | t+${Date.now() - t0}ms`);
+
+    // Serve from cache only if it's a fresh, non-HLS MP4
+    if (cachedHasVideo && !cachedIsHls && !isExpired) {
       console.log(`[details] Sending cached MP4 response: t+${Date.now() - t0}ms`);
       // Include cached relatedPins and qualities if available
       const related = cached.relatedPins || [];
@@ -757,6 +868,46 @@ app.get("/api/scrape/now", async (req, res) => {
     console.error("[/api/scrape/now] Error:", err.message);
     res.status(500).json({ success: false, error: err.message });
   }
+});
+
+// GET /api/links/status — Link pre-fetch job status
+app.get('/api/links/status', async (req, res) => {
+  const LINK_TTL_MS = 90 * 60 * 1000;
+  const now = Date.now();
+
+  let resolvedPins = 0;
+  let pendingPins = 0;
+
+  try {
+    let pins = [];
+    if (currentBatchId) {
+      pins = await db.getPinsByBatch(currentBatchId);
+    } else {
+      pins = await db.getAllPins();
+    }
+
+    pins.forEach(p => {
+      const hasFreshVideo = p.videoSrc && p.linksRefreshedAt &&
+        (now - new Date(p.linksRefreshedAt).getTime()) <= LINK_TTL_MS;
+      if (hasFreshVideo) {
+        resolvedPins++;
+      } else {
+        pendingPins++;
+      }
+    });
+  } catch (e) {
+    console.warn('[link-refresh] /api/links/status DB query failed:', e.message);
+  }
+
+  res.json({
+    lastRun: linkRefreshLastRun,
+    nextRun: linkRefreshNextRun,
+    totalPins: linkRefreshStats.totalPins,
+    resolvedPins,
+    pendingPins,
+    failedPins: linkRefreshStats.failedPins,
+    isRunning: linkRefreshIsRunning,
+  });
 });
 
 // GET /api/status ── 24-hour trigger status + proxy quota

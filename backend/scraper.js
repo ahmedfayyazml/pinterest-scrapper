@@ -234,18 +234,20 @@ async function scrapeByKeyword(keyword) {
 
 // ─── YT-DLP EXTRACTION (with residential proxy support) ────────────────────
 
-function fetchPinDetailsYTDLP(pinUrl) {
+function fetchPinDetailsYTDLP(pinUrl, { forceNoProxy = false } = {}) {
   return new Promise((resolve, reject) => {
     // Build yt-dlp command with optional proxy
+    // forceNoProxy=true skips proxy entirely (used by link-refresh cron to protect daily quota)
     let cmd = "yt-dlp -j";
     const proxyUrl = proxyManager.getProxyUrl();
-    if (proxyManager.canUseProxy()) {
+    if (!forceNoProxy && proxyManager.canUseProxy()) {
       cmd += ` --proxy "${proxyUrl}"`;
       proxyManager.useProxy();
       console.log(`[scraper] Fetching details via yt-dlp (WITH PROXY) for: ${pinUrl}`);
     } else {
       const status = proxyManager.getStatus();
-      console.log(`[scraper] Fetching details via yt-dlp (no proxy, quota: ${status.usesToday}/${status.limit}) for: ${pinUrl}`);
+      const reason = forceNoProxy ? 'forceNoProxy=true' : `quota: ${status.usesToday}/${status.limit}`;
+      console.log(`[scraper] Fetching details via yt-dlp (no proxy, ${reason}) for: ${pinUrl}`);
     }
     cmd += ` "${pinUrl}"`;
 
@@ -377,10 +379,11 @@ function fetchPinDetailsYTDLP(pinUrl) {
   });
 }
 
-async function scrapePinDetails(pinUrl, contextQuery = "") {
+async function scrapePinDetails(pinUrl, { contextQuery = "", forceNoProxy = false } = {}) {
   try {
     // 1. Try yt-dlp first (FAST & ROBUST) — NO related pins fetch here
-    const details = await fetchPinDetailsYTDLP(pinUrl);
+    // forceNoProxy=true is passed by the link-refresh cron to avoid burning SOCKS5 quota
+    const details = await fetchPinDetailsYTDLP(pinUrl, { forceNoProxy });
     return details;
   } catch (ytdlpError) {
     console.warn(`[scraper] yt-dlp failed, falling back to browser scraper: ${ytdlpError.message}`);

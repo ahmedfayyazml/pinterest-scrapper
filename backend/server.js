@@ -51,12 +51,16 @@ const PINTEREST_HEADERS = {
   "Sec-Fetch-Site": "cross-site",
 };
 
-function buildAxiosOpts(forceProxy, isStream = true) {
+function buildAxiosOpts(forceProxy, isStream = true, rangeHeader = null) {
   const opts = {
     timeout: 30000,
     headers: { ...PINTEREST_HEADERS },
   };
   if (isStream) opts.responseType = "stream";
+
+  if (rangeHeader) {
+    opts.headers["Range"] = rangeHeader;
+  }
 
   if (forceProxy) {
     // Use HTTP proxy mode for axios (Proxy Cheap supports HTTP on :8080)
@@ -116,10 +120,14 @@ app.get("/api/proxy/media", async (req, res) => {
 
   try {
     console.log(`[media] Starting axios request: t+${Date.now() - t0}ms`);
-    const response = await axios.get(targetUrl, buildAxiosOpts(forceProxy, true));
+    const rangeHeader = req.headers["range"] || null;
+    const response = await axios.get(targetUrl, buildAxiosOpts(forceProxy, true, rangeHeader));
     const t1 = Date.now();
-    console.log(`[media] Got first byte from CDN: t+${t1 - t0}ms`);
+    console.log(`[media] Got first byte from CDN: t+${t1 - t0}ms | Status: ${response.status}`);
     console.log(`[cdn] Response time: ${t1 - t0}ms`);
+
+    // Forward the status code (e.g. 206 Partial Content or 200 OK)
+    res.status(response.status);
 
     // Forward content headers
     const ct = response.headers["content-type"];
@@ -132,7 +140,7 @@ app.get("/api/proxy/media", async (req, res) => {
     if (ar) res.setHeader("Accept-Ranges", ar);
 
     const sizeMB = cl ? (parseInt(cl) / (1024 * 1024)).toFixed(2) : 'unknown';
-    console.log(`[media] Type: ${ct || 'unknown'} | File size: ${sizeMB} MB`);
+    console.log(`[media] Type: ${ct || 'unknown'} | File size: ${sizeMB} MB | Range: ${rangeHeader || 'none'}`);
 
     // Cache for 1 hour to reduce repeat fetches
     res.setHeader("Cache-Control", "public, max-age=3600");
@@ -145,7 +153,9 @@ app.get("/api/proxy/media", async (req, res) => {
     });
   } catch (err) {
     console.error(`[media] ❌ Error proxying ${shortUrl}: ${err.message} | t+${Date.now() - t0}ms`);
-    if (!res.headersSent) {
+    if (err.response && !res.headersSent) {
+      res.status(err.response.status).send(err.response.statusText);
+    } else if (!res.headersSent) {
       res.status(502).send("Failed to fetch media");
     }
   }

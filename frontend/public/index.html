@@ -1253,7 +1253,7 @@
             ${pickerHtml}
           `;
           const videoEl = document.getElementById('mp4Video');
-          let mp4Tier = 2;
+           let mp4Tier = 1;
           let currentQuality = 'auto';
           let userLockedQuality = false;
 
@@ -1278,7 +1278,13 @@
 
           // ── Load a source into the video element (MP4 only) ──
           function loadSource(url) {
-            videoEl.src = tier2Url(url);
+            if (mp4Tier === 1) {
+              videoEl.src = directUrl(url);
+            } else if (mp4Tier === 2) {
+              videoEl.src = tier2Url(url);
+            } else if (mp4Tier === 3) {
+              videoEl.src = tier3Url(url);
+            }
             videoEl.load();
           }
 
@@ -1362,15 +1368,16 @@
             mp4Tier = tier;
             const auto = qualities.length > 0 ? pickAutoQuality() : { url: data.videoSrc };
 
-            if (tier === 2) {
-              loadSource(auto.url);
-            } else if (tier === 3) {
-              videoEl.src = tier3Url(data.videoSrc);
-              videoEl.load();
-            } else {
-              showVideoUnavailable(playerWrap, pinUrl);
+            let activeUrl = data.videoSrc;
+            if (currentQuality !== 'auto' && qualities.length > 0) {
+              const matched = qualities.find(q => q.label === currentQuality);
+              if (matched) activeUrl = matched.url;
+            } else if (qualities.length > 0) {
+              activeUrl = auto.url;
             }
-            console.log(`[player] Trying Tier ${tier}`);
+
+            console.log(`[player] Trying Tier ${tier} | quality: ${currentQuality}`);
+            loadSource(activeUrl);
           }
 
           videoEl.addEventListener('error', function() {
@@ -1382,7 +1389,7 @@
             }
           }, true);
 
-          tryMp4Tier(2);
+          tryMp4Tier(1);
         document.getElementById('detailDownload').style.display = 'flex';
       } else {
         console.log(`[player] ⚠️ No videoSrc in response`);

@@ -1196,11 +1196,7 @@
       oldVideo.removeAttribute('src');
       oldVideo.load(); // force release of media resources
     }
-    // Destroy any active HLS.js instance (legacy cleanup)
-    if (window._activeHls) {
-      try { window._activeHls.destroy(); } catch(e) {}
-      window._activeHls = null;
-    }
+
     
     // Reset View
     playerWrap.innerHTML = '<div class="spinner" style="margin-top:20% !important"></div>';
@@ -1223,13 +1219,6 @@
       // Render Player — 2-Tier Playback (Tier 2: VPS pipe → Tier 3: SOCKS5 proxy)
       const posterUrl = tier2Url(data.thumbnail || '');
       if (data.videoSrc) {
-        const isHls = data.videoSrc.includes('.m3u8');
-        if (isHls) {
-          // HLS no longer supported — treat as unavailable
-          console.log(`[player] Skipping HLS source (not supported), trying live re-scrape`);
-          showVideoUnavailable(playerWrap, pinUrl);
-          document.getElementById('detailDownload').style.display = 'none';
-        } else {
           // ── MP4 with Quality Picker: Tier 2 → Tier 3 ──────────
           const qualities = data.qualities || [];
           console.log(`[player] MP4 mode | Qualities: ${qualities.length > 0 ? qualities.map(q => `${q.label}@${q.tbr}k`).join(', ') : 'none (single source)'}`);
@@ -1394,7 +1383,6 @@
           }, true);
 
           tryMp4Tier(2);
-        }
         document.getElementById('detailDownload').style.display = 'flex';
       } else {
         console.log(`[player] ⚠️ No videoSrc in response`);

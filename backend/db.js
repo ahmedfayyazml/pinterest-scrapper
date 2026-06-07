@@ -151,6 +151,17 @@ async function clearAllVideoData() {
   }
 }
 
+async function deletePin(pinUrl) {
+  try {
+    if (!pinUrl) return;
+    const docId = Buffer.from(pinUrl).toString('base64');
+    await firestoreDb.collection("pins").doc(docId).delete();
+    console.log(`[db] Deleted pin from Firestore: ${pinUrl}`);
+  } catch (error) {
+    console.error("Firestore deletePin failed:", error.message);
+  }
+}
+
 module.exports = {
   upsertPin,
   getAllPins,
@@ -158,5 +169,7 @@ module.exports = {
   getLatestPin,
   getPinsByBatch,
   saveBatchPins,
-  clearAllVideoData
+  clearAllVideoData,
+  deletePin
 };
+

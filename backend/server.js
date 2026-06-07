@@ -301,12 +301,14 @@ async function runLinkRefresh() {
           } else {
             linkRefreshStats.failedPins++;
             linkRefreshStats.pendingPins = Math.max(0, linkRefreshStats.pendingPins - 1);
-            console.warn(`[link-refresh] Failed (no videoSrc): ${pin.pinUrl}`);
+            console.warn(`[link-refresh] Failed (no videoSrc): ${pin.pinUrl} - Deleting pin`);
+            await db.deletePin(pin.pinUrl);
           }
         } catch (err) {
           linkRefreshStats.failedPins++;
           linkRefreshStats.pendingPins = Math.max(0, linkRefreshStats.pendingPins - 1);
-          console.warn(`[link-refresh] Error for ${pin.pinUrl}: ${err.message}`);
+          console.warn(`[link-refresh] Error for ${pin.pinUrl}: ${err.message} - Deleting pin`);
+          await db.deletePin(pin.pinUrl);
         }
       }));
 
@@ -611,12 +613,12 @@ app.get("/api/pins/details", async (req, res) => {
     console.log(`[details] [scraper] Scraper triggered: true | t+${tScraper - t0}ms`);
     const details = await scrapePinDetails(pinUrl);
     console.log(`[details] Scraper returned: t+${Date.now() - t0}ms (scraper took ${Date.now() - tScraper}ms)`);
-    if (details.success) {
+    if (details.success && details.videoSrc) {
       const qualities = details.qualities || [];
       const pinObj = sanitizeForFirestore({
         pinUrl,
         thumbnail: details.thumbnail || "",
-        videoSrc: details.videoSrc || "",
+        videoSrc: details.videoSrc,
         qualities,
         title: details.title || "Pinterest Video",
         author: details.author || "Pinterest",
@@ -634,8 +636,9 @@ app.get("/api/pins/details", async (req, res) => {
         }
       }).catch(err => console.log(`[details] [background] Related failed silently: ${err.message}`));
     } else {
-      console.log(`[details] Scraper failed, returning error: t+${Date.now() - t0}ms`);
-      res.status(500).json(details);
+      console.log(`[details] Scraper failed or no videoSrc, deleting pin: t+${Date.now() - t0}ms`);
+      await db.deletePin(pinUrl);
+      res.status(500).json({ success: false, error: "Video source unavailable" });
     }
   } catch (err) {
     console.error(`[details] Global Error: ${err.message} | t+${Date.now() - t0}ms`);

@@ -132,8 +132,7 @@ app.get("/api/proxy/media", async (req, res) => {
     if (ar) res.setHeader("Accept-Ranges", ar);
 
     const sizeMB = cl ? (parseInt(cl) / (1024 * 1024)).toFixed(2) : 'unknown';
-    const isHls = (ct || '').includes('mpegurl') || targetUrl.includes('.m3u8');
-    console.log(`[media] Type: ${isHls ? 'HLS segment' : (ct || 'unknown')} | File size: ${sizeMB} MB`);
+    console.log(`[media] Type: ${ct || 'unknown'} | File size: ${sizeMB} MB`);
 
     // Cache for 1 hour to reduce repeat fetches
     res.setHeader("Cache-Control", "public, max-age=3600");
@@ -152,90 +151,6 @@ app.get("/api/proxy/media", async (req, res) => {
   }
 });
 
-// HLS .m3u8 proxy — rewrites segment URLs inside the playlist
-// Supports forceProxy param for Tier 3 fallback
-app.get("/api/proxy/hls", async (req, res) => {
-  const t0 = Date.now();
-  const targetUrl = req.query.url;
-  if (!targetUrl) return res.status(400).send("Missing ?url=");
-
-  const forceProxy = req.query.forceProxy === "true";
-  const shortUrl = targetUrl.split('/').slice(-2).join('/');
-  console.log(`[hls] ─── Request received: ${shortUrl} | forceProxy=${forceProxy} | t=${t0}`);
-  console.log(`[hls] [proxy] SOCKS5 active: ${forceProxy}`);
-
-  // Tier 3 gate
-  if (forceProxy) {
-    if (!proxyManager.canUseProxy()) {
-      return res.status(429).json({
-        error: "Proxy limit reached for today",
-        ...proxyManager.getStatus(),
-      });
-    }
-    proxyManager.useProxy();
-  }
-
-  try {
-    console.log(`[hls] Fetching manifest: t+${Date.now() - t0}ms`);
-    const response = await axios.get(targetUrl, buildAxiosOpts(forceProxy, false));
-    const t1 = Date.now();
-
-    let playlist = response.data;
-    const manifestSize = playlist.length;
-    console.log(`[hls] Manifest received, size: ${manifestSize} bytes | fetch took: ${t1 - t0}ms`);
-
-    // Determine the base URL for resolving relative segment paths
-    const baseUrl = targetUrl.substring(0, targetUrl.lastIndexOf("/") + 1);
-
-    // Get the API base for building proxy URLs
-    const proto = req.headers["x-forwarded-proto"] || req.protocol;
-    const host = req.headers["x-forwarded-host"] || req.headers.host;
-    const apiBase = `${proto}://${host}`;
-
-    // Propagate forceProxy flag into rewritten URLs so all segments
-    // also route through the SOCKS5 proxy if we're in Tier 3
-    const fpParam = forceProxy ? "&forceProxy=true" : "";
-
-    console.log(`[hls] Rewriting segment URLs: t+${Date.now() - t0}ms`);
-    // Count segments
-    let segmentCount = 0;
-    // Rewrite every line that looks like a segment/variant URL
-    playlist = playlist.split("\n").map(line => {
-      line = line.trim();
-      if (!line || line.startsWith("#")) {
-        // Rewrite URI= attributes inside #EXT tags (e.g. encryption key URIs)
-        if (line.includes('URI="')) {
-          line = line.replace(/URI="([^"]+)"/g, (match, uri) => {
-            const absUri = uri.startsWith("http") ? uri : baseUrl + uri;
-            return `URI="${apiBase}/api/proxy/media?url=${encodeURIComponent(absUri)}${fpParam}"`;
-          });
-        }
-        return line;
-      }
-      segmentCount++;
-      // It's a URL line (segment or sub-playlist)
-      const absUrl = line.startsWith("http") ? line : baseUrl + line;
-      if (absUrl.endsWith(".m3u8")) {
-        return `${apiBase}/api/proxy/hls?url=${encodeURIComponent(absUrl)}${fpParam}`;
-      }
-      return `${apiBase}/api/proxy/media?url=${encodeURIComponent(absUrl)}${fpParam}`;
-    }).join("\n");
-
-    console.log(`[hls] Segments: ${segmentCount}`);
-    console.log(`[hls] Sending rewritten manifest to client: t+${Date.now() - t0}ms`);
-
-    res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Cache-Control", "public, max-age=300");
-    res.send(playlist);
-    console.log(`[hls] ─── Done: ${shortUrl} | total=${Date.now() - t0}ms`);
-  } catch (err) {
-    console.error(`[hls] ❌ Error proxying ${shortUrl}: ${err.message} | t+${Date.now() - t0}ms`);
-    if (!res.headersSent) {
-      res.status(502).send("Failed to fetch HLS playlist");
-    }
-  }
-});
 
 // ─── BACKGROUND SCRAPER ────────────────────────────────────────────────────
 
@@ -628,19 +543,18 @@ app.get("/api/pins/details", async (req, res) => {
     const cached = allCached.find(p => p.pinUrl === pinUrl);
     // 2. Check freshness: treat cache as valid only if linksRefreshedAt is within 90 minutes
     const LINK_TTL_MS = 90 * 60 * 1000;
-    const cachedHasVideo = cached && cached.videoSrc;
-    const cachedIsHls = cachedHasVideo && cached.videoSrc.includes('.m3u8');
+    const cachedHasVideo = cached && cached.videoSrc && !cached.videoSrc.includes('.m3u8');
     const isExpired = !cached?.linksRefreshedAt ||
       (Date.now() - new Date(cached.linksRefreshedAt).getTime()) > LINK_TTL_MS;
 
     console.log(`[details] Firestore result: ${
       cachedHasVideo
-        ? (cachedIsHls ? 'CACHE HIT (HLS — stale, re-fetching MP4)' : isExpired ? 'CACHE HIT (MP4 — expired, re-fetching)' : 'CACHE HIT (MP4 — fresh)')
-        : cached ? 'CACHE HIT (no videoSrc)' : 'CACHE MISS'
+        ? (isExpired ? 'CACHE HIT (MP4 — expired, re-fetching)' : 'CACHE HIT (MP4 — fresh)')
+        : cached ? 'CACHE HIT (no valid MP4 videoSrc)' : 'CACHE MISS'
     } | t+${Date.now() - t0}ms`);
 
-    // Serve from cache only if it's a fresh, non-HLS MP4
-    if (cachedHasVideo && !cachedIsHls && !isExpired) {
+    // Serve from cache only if it's a fresh direct MP4
+    if (cachedHasVideo && !isExpired) {
       console.log(`[details] Sending cached MP4 response: t+${Date.now() - t0}ms`);
       // Include cached relatedPins and qualities if available
       const related = cached.relatedPins || [];

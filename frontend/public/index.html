@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>PinVid — Pinterest Video Scraper</title>
-  <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet" />
   <style>
@@ -1051,15 +1051,6 @@
     return `${API}/proxy/media?url=${encodeURIComponent(url)}&forceProxy=true`;
   }
 
-  function tier2Hls(url) {
-    if (!url) return url;
-    return `${API}/proxy/hls?url=${encodeURIComponent(url)}`;
-  }
-
-  function tier3Hls(url) {
-    if (!url) return url;
-    return `${API}/proxy/hls?url=${encodeURIComponent(url)}&forceProxy=true`;
-  }
 
   // For thumbnails in cards: try direct first (SW injects headers), fall back to Tier 2
   function thumbUrl(url) {
@@ -1205,7 +1196,7 @@
       oldVideo.removeAttribute('src');
       oldVideo.load(); // force release of media resources
     }
-    // Destroy any active HLS.js instance
+    // Destroy any active HLS.js instance (legacy cleanup)
     if (window._activeHls) {
       try { window._activeHls.destroy(); } catch(e) {}
       window._activeHls = null;
@@ -1226,78 +1217,24 @@
       const data = await res.json();
       const tData = performance.now();
       console.log(`[player] API response received: t+${(tData - tFetch).toFixed(0)}ms | success=${data.success} | hasVideoSrc=${!!data.videoSrc}`);
-      
+
       if (!data.success) throw new Error(data.error);
 
-      // Render Player — 2-Tier Playback (skip Tier 1 for videos)
-      // Service Workers CANNOT set Referer/Origin headers (browser forbidden headers),
-      // so direct CDN always fails for videos. Start at Tier 2 immediately.
-      // Tier 2: VPS pipe (fast, no proxy cost) → Tier 3: SOCKS5 proxy (last resort)
+      // Render Player — 2-Tier Playback (Tier 2: VPS pipe → Tier 3: SOCKS5 proxy)
       const posterUrl = tier2Url(data.thumbnail || '');
       if (data.videoSrc) {
         const isHls = data.videoSrc.includes('.m3u8');
-        console.log(`[player] Video type: ${isHls ? 'HLS (.m3u8)' : 'MP4'}`);
-        console.log(`[player] Raw videoSrc: ${data.videoSrc.substring(0, 80)}...`);
-
-        if (isHls && Hls.isSupported()) {
-          // ── HLS: Tier 2 → Tier 3 ──────────────────────────────────
-          playerWrap.innerHTML = `<video id="hlsVideo" controls autoplay loop playsinline poster="${posterUrl}" style="width:100%"></video>`;
-          const videoEl = document.getElementById('hlsVideo');
-          let hlsTier = 2;
-
-          // Video element lifecycle events
-          videoEl.addEventListener('loadedmetadata', () => console.log(`[player] loadedmetadata: t+${(performance.now() - tFetch).toFixed(0)}ms`));
-          videoEl.addEventListener('canplay', () => console.log(`[player] canplay event fired: t+${(performance.now() - tFetch).toFixed(0)}ms`));
-          videoEl.addEventListener('playing', () => console.log(`[player] playing event fired: t+${(performance.now() - tFetch).toFixed(0)}ms`));
-          videoEl.addEventListener('loadeddata', () => console.log(`[player] First frame rendered: t+${(performance.now() - tFetch).toFixed(0)}ms`));
-          videoEl.addEventListener('waiting', () => console.log(`[player] ⏳ buffering: t+${(performance.now() - tFetch).toFixed(0)}ms`));
-          videoEl.addEventListener('stalled', () => console.log(`[player] ⚠️ stalled: t+${(performance.now() - tFetch).toFixed(0)}ms`));
-
-          let hls = new Hls();
-          window._activeHls = hls;
-          const hlsSrc = tier2Hls(data.videoSrc);
-          console.log(`[hls.js] Hls instance created: t+${(performance.now() - tFetch).toFixed(0)}ms`);
-          console.log(`[player] HLS starting at Tier 2 (VPS pipe)`);
-          console.log(`[player] Video src set: ${hlsSrc.substring(0, 100)}... | t+${(performance.now() - tFetch).toFixed(0)}ms`);
-          hls.loadSource(hlsSrc);
-          hls.attachMedia(videoEl);
-
-          hls.on(Hls.Events.MANIFEST_PARSED, (ev, data) => {
-            console.log(`[hls.js] MANIFEST_PARSED: ${data.levels.length} quality levels | t+${(performance.now() - tFetch).toFixed(0)}ms`);
-          });
-          let firstFrag = true;
-          hls.on(Hls.Events.FRAG_LOADED, (ev, data) => {
-            if (firstFrag) {
-              console.log(`[hls.js] FRAG_LOADED first fragment: size=${(data.frag.stats?.total || 0)} bytes | t+${(performance.now() - tFetch).toFixed(0)}ms`);
-              firstFrag = false;
-            }
-          });
-
-          hls.on(Hls.Events.ERROR, function(event, errData) {
-            console.log(`[hls.js] ERROR: type=${errData.type} details=${errData.details} fatal=${errData.fatal} | t+${(performance.now() - tFetch).toFixed(0)}ms`);
-            if (errData.fatal) {
-              hls.destroy();
-              if (hlsTier === 2) {
-                hlsTier = 3;
-                console.log('[player] HLS Tier 2 failed, trying Tier 3 (SOCKS5)');
-                hls = new Hls();
-                hls.loadSource(tier3Hls(data.videoSrc));
-                hls.attachMedia(videoEl);
-                hls.on(Hls.Events.ERROR, function(ev3, err3) {
-                  if (err3.fatal) {
-                    hls.destroy();
-                    showVideoUnavailable(playerWrap, pinUrl);
-                  }
-                });
-              }
-            }
-          });
+        if (isHls) {
+          // HLS no longer supported — treat as unavailable
+          console.log(`[player] Skipping HLS source (not supported), trying live re-scrape`);
+          showVideoUnavailable(playerWrap, pinUrl);
+          document.getElementById('detailDownload').style.display = 'none';
         } else {
-          // ── MP4 with Quality Picker: Tier 2 → Tier 3 ──────────────
+          // ── MP4 with Quality Picker: Tier 2 → Tier 3 ──────────
           const qualities = data.qualities || [];
-          console.log(`[player] Qualities available: ${qualities.length > 0 ? qualities.map(q => `${q.label}[${q.protocol}]`).join(', ') : 'none (single source)'}`);
+          console.log(`[player] MP4 mode | Qualities: ${qualities.length > 0 ? qualities.map(q => `${q.label}@${q.tbr}k`).join(', ') : 'none (single source)'}`);
 
-          // Build quality picker HTML
+          // Build quality picker HTML (MP4 only)
           let pickerHtml = '';
           if (qualities.length > 1) {
             pickerHtml = `
@@ -1313,7 +1250,7 @@
                     Auto
                   </button>
                   ${qualities.map(q => `
-                    <button class="quality-menu-item" data-quality="${q.label}" data-url="${q.url}" data-protocol="${q.protocol}">
+                    <button class="quality-menu-item" data-quality="${q.label}" data-url="${q.url}" data-protocol="mp4">
                       ${q.label}${q.tbr ? `<span class="bitrate">${q.tbr}kbps</span>` : ''}
                     </button>
                   `).join('')}
@@ -1338,52 +1275,26 @@
             const downlink = conn ? conn.downlink : 10;
             let pick;
             if (downlink >= 5) {
-              pick = qualities[0]; // highest (usually MP4 720p)
+              pick = qualities[0]; // highest
             } else if (downlink >= 2) {
               pick = qualities.find(q => q.label === '480p') || qualities.find(q => q.height <= 720) || qualities[qualities.length - 1];
             } else if (downlink >= 1) {
               pick = qualities.find(q => q.label === '360p') || qualities.find(q => q.height <= 480) || qualities[qualities.length - 1];
             } else {
-              pick = qualities[qualities.length - 1]; // lowest
+              pick = qualities[qualities.length - 1];
             }
-            console.log(`[player] Auto quality: ${pick.label} [${pick.protocol}] (downlink: ${downlink}Mbps)`);
+            console.log(`[player] Auto quality: ${pick.label} (downlink: ${downlink}Mbps)`);
             return pick;
           }
 
-          // ── Load a source into the video element ──
-          function loadSource(url, protocol) {
-            // Destroy any existing HLS instance
-            if (window._activeHls) {
-              try { window._activeHls.destroy(); } catch(e) {}
-              window._activeHls = null;
-            }
-
-            if (protocol === 'hls' && Hls.isSupported()) {
-              const hls = new Hls();
-              window._activeHls = hls;
-              const hlsSrc = tier2Hls(url);
-              console.log(`[player] Loading HLS quality via proxy`);
-              hls.loadSource(hlsSrc);
-              hls.attachMedia(videoEl);
-              hls.on(Hls.Events.ERROR, function(ev, errData) {
-                if (errData.fatal) {
-                  console.log(`[player] HLS quality error, falling back to MP4`);
-                  hls.destroy();
-                  window._activeHls = null;
-                  // Fall back to direct MP4
-                  videoEl.src = tier2Url(data.videoSrc);
-                  videoEl.load();
-                }
-              });
-            } else {
-              // Direct MP4
-              videoEl.src = tier2Url(url);
-              videoEl.load();
-            }
+          // ── Load a source into the video element (MP4 only) ──
+          function loadSource(url) {
+            videoEl.src = tier2Url(url);
+            videoEl.load();
           }
 
           // ── Quality switch function ──
-          function switchQuality(label, url, protocol) {
+          function switchQuality(label, url) {
             const wasPlaying = !videoEl.paused;
             const currentTime = videoEl.currentTime;
             currentQuality = label;
@@ -1391,10 +1302,10 @@
             if (label === 'auto') {
               userLockedQuality = false;
               const auto = pickAutoQuality();
-              loadSource(auto.url, auto.protocol);
+              loadSource(auto.url);
             } else {
               userLockedQuality = true;
-              loadSource(url, protocol);
+              loadSource(url);
             }
 
             console.log(`[player] Switched to quality: ${label}`);
@@ -1404,16 +1315,13 @@
               videoEl.removeEventListener('loadedmetadata', seekBack);
             });
 
-            // Update badge
             const badge = document.getElementById('qualityBadge');
             if (badge) badge.textContent = label === 'auto' ? 'AUTO' : label;
 
-            // Update active state
             document.querySelectorAll('.quality-menu-item').forEach(item => {
               item.classList.toggle('active', item.dataset.quality === label);
             });
 
-            // Close menu
             const menu = document.getElementById('qualityMenu');
             const btn = document.getElementById('qualityBtn');
             if (menu) menu.classList.remove('open');
@@ -1434,7 +1342,7 @@
             qMenu.querySelectorAll('.quality-menu-item').forEach(item => {
               item.addEventListener('click', (e) => {
                 e.stopPropagation();
-                switchQuality(item.dataset.quality, item.dataset.url || '', item.dataset.protocol || 'mp4');
+                switchQuality(item.dataset.quality, item.dataset.url || '');
               });
             });
 
@@ -1445,40 +1353,35 @@
               }
             });
 
-            // Auto re-evaluate on connection change
             const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
             if (conn) {
               conn.addEventListener('change', () => {
                 if (!userLockedQuality) {
                   console.log(`[player] Connection changed, re-evaluating auto quality`);
-                  switchQuality('auto', '', 'auto');
+                  switchQuality('auto', '');
                 }
               });
             }
           }
 
-          // Video element lifecycle events
           videoEl.addEventListener('loadedmetadata', () => console.log(`[player] loadedmetadata: t+${(performance.now() - tFetch).toFixed(0)}ms`));
           videoEl.addEventListener('canplay', () => console.log(`[player] canplay event fired: t+${(performance.now() - tFetch).toFixed(0)}ms`));
           videoEl.addEventListener('playing', () => console.log(`[player] playing event fired: t+${(performance.now() - tFetch).toFixed(0)}ms`));
           videoEl.addEventListener('waiting', () => console.log(`[player] ⏳ buffering: t+${(performance.now() - tFetch).toFixed(0)}ms`));
 
-          // Initial load with auto quality
           function tryMp4Tier(tier) {
             mp4Tier = tier;
-            const auto = qualities.length > 0 ? pickAutoQuality() : { url: data.videoSrc, protocol: 'mp4' };
+            const auto = qualities.length > 0 ? pickAutoQuality() : { url: data.videoSrc };
 
             if (tier === 2) {
-              loadSource(auto.url, auto.protocol);
+              loadSource(auto.url);
             } else if (tier === 3) {
-              // Tier 3: force MP4 through SOCKS5
               videoEl.src = tier3Url(data.videoSrc);
               videoEl.load();
             } else {
               showVideoUnavailable(playerWrap, pinUrl);
             }
-
-            console.log(`[player] Trying Tier ${tier} | quality: ${currentQuality}`);
+            console.log(`[player] Trying Tier ${tier}`);
           }
 
           videoEl.addEventListener('error', function() {
@@ -1490,7 +1393,6 @@
             }
           }, true);
 
-          // Start at Tier 2 with auto quality
           tryMp4Tier(2);
         }
         document.getElementById('detailDownload').style.display = 'flex';

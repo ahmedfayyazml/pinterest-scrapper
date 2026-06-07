@@ -262,84 +262,47 @@ function fetchPinDetailsYTDLP(pinUrl, { forceNoProxy = false } = {}) {
         
         if (info.formats && info.formats.length > 0) {
           const allFormats = info.formats.filter(f => f.url);
-          
-          // 1. STRONGLY prefer direct MP4 — HLS segments expire and return 404
-          const mp4Formats = allFormats.filter(f => 
-            (f.url.includes('.mp4') || f.ext === 'mp4') && 
+
+          // 1. Prefer direct MP4 formats (exclude any HLS/m3u8)
+          const mp4Formats = allFormats.filter(f =>
+            (f.url.includes('.mp4') || f.ext === 'mp4') &&
             !f.url.includes('.m3u8') && !f.protocol?.includes('m3u8')
           );
-          
-          // 2. Any non-HLS format as fallback
-          const nonHlsFormats = allFormats.filter(f => 
+
+          // 2. Any non-HLS, non-cmfv format as fallback
+          const nonHlsFormats = allFormats.filter(f =>
             !f.url.includes('.m3u8') && !f.protocol?.includes('m3u8') &&
             !f.url.includes('.cmfv')
           );
-          
-          // 3. Pick best available (sorted by bitrate, highest first)
+
+          // 3. Pick best available MP4 or non-HLS (sorted by bitrate, highest first)
           const preferred = mp4Formats.length > 0 ? mp4Formats : nonHlsFormats;
           if (preferred.length > 0) {
             preferred.sort((a, b) => (b.tbr || 0) - (a.tbr || 0));
             videoSrc = preferred[0].url;
             console.log(`[scraper] Selected format: ${preferred[0].ext || 'unknown'} @ ${preferred[0].tbr || '?'}kbps (${mp4Formats.length} mp4, ${nonHlsFormats.length} non-hls, ${allFormats.length} total)`);
-          } else if (allFormats.length > 0) {
-            // Absolute last resort: use whatever is available (even HLS)
-            allFormats.sort((a, b) => (b.tbr || 0) - (a.tbr || 0));
-            videoSrc = allFormats[0].url;
-            console.log(`[scraper] WARNING: Only HLS available, using: ${allFormats[0].ext || 'hls'}`);
+          } else {
+            console.log(`[scraper] WARNING: No direct MP4 found for this pin. videoSrc will be empty.`);
           }
-          
-          // Build qualities array — include HLS variants for quality switching
-          // HLS segments work fine through our VPS proxy with proper headers
+
+          // Build qualities array — MP4 only, multiple resolutions
           const seenHeights = new Set();
-          
-          // Add direct MP4 first (most reliable)
-          if (mp4Formats.length > 0) {
-            const bestMp4 = mp4Formats.sort((a, b) => (b.height || 0) - (a.height || 0))[0];
-            if (bestMp4.height) {
-              const label = bestMp4.height >= 720 ? '720p' : `${bestMp4.height}p`;
-              seenHeights.add(bestMp4.height);
-              qualities.push({
-                label: label + ' (MP4)',
-                height: bestMp4.height,
-                tbr: Math.round(bestMp4.tbr || 0),
-                url: bestMp4.url,
-                protocol: 'mp4'
-              });
-            }
-          }
-          
-          // Add HLS variants (different qualities)
-          const hlsFormats = allFormats.filter(f => 
-            f.protocol === 'm3u8_native' || f.url?.includes('.m3u8')
-          );
-          const labelMap = { 240: '240p', 360: '360p', 416: '360p', 480: '480p', 640: '480p', 864: '720p', 1024: '720p', 1152: '720p', 1280: '720p' };
-          hlsFormats
-            .filter(f => f.height && f.tbr)
+          mp4Formats
+            .filter(f => f.height)
             .sort((a, b) => (b.height || 0) - (a.height || 0))
             .forEach(f => {
-              // Derive a user-friendly label from the URL width suffix
-              const widthMatch = f.url.match(/_(\d+)w\.m3u8/);
-              const w = widthMatch ? parseInt(widthMatch[1]) : null;
-              let label;
-              if (w === 240) label = '240p';
-              else if (w === 360) label = '360p';
-              else if (w === 480) label = '480p';
-              else if (w === 640) label = '720p';
-              else label = labelMap[f.height] || `${f.height}p`;
-              
-              // Skip if we already have this label
-              if (seenHeights.has(label)) return;
-              seenHeights.add(label);
-              
+              if (seenHeights.has(f.height)) return;
+              seenHeights.add(f.height);
+              const label = f.height >= 720 ? '720p' : `${f.height}p`;
               qualities.push({
                 label,
                 height: f.height,
                 tbr: Math.round(f.tbr || 0),
                 url: f.url,
-                protocol: 'hls'
+                protocol: 'mp4'
               });
             });
-          
+
           // Sort: highest quality first
           qualities.sort((a, b) => (b.height || 0) - (a.height || 0));
           console.log(`[scraper] Qualities available: ${qualities.map(q => `${q.label}@${q.tbr}k[${q.protocol}]`).join(', ') || 'none'}`);

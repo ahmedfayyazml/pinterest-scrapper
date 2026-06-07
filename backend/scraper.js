@@ -106,7 +106,8 @@ async function extractVideoPins(page) {
         const anchor = el.querySelector("a[href*='/pin/']");
         if (!anchor) return;
 
-        const pinUrl = anchor.href;
+        const rawUrl = anchor.href;
+        const pinUrl = rawUrl.split('?')[0].replace(/\/$/, "");
         if (seen.has(pinUrl)) return;
         seen.add(pinUrl);
 
@@ -143,7 +144,16 @@ async function scrape200Pins() {
   try {
     console.log("[scraper] Fetching 200 trending video pins...");
 
-    const fallbacks = ["aesthetic videos", "nature videos", "funny videos", "cooking videos", "satisfying videos"];
+    const fallbacks = [
+      "aesthetic videos", "nature videos", "funny videos", "cooking videos", 
+      "satisfying videos", "cat videos", "dog videos", "car videos", 
+      "travel videos", "street photography videos", "art videos", 
+      "fashion videos", "gaming videos", "workout videos", 
+      "skateboarding videos", "music videos", "dance videos", 
+      "tech videos", "diy videos", "motivation videos", 
+      "home decor videos", "makeup videos", "anime edits", 
+      "movie clips", "sports highlights"
+    ];
     const randomKeyword = fallbacks[Math.floor(Math.random() * fallbacks.length)];
     
     await page.goto(`https://www.pinterest.com/search/pins/?q=${encodeURIComponent(randomKeyword)}&rs=typed`, {

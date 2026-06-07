@@ -4,8 +4,10 @@ console.log("Database Layer: Running in Pure Firestore Mode 🌐");
 
 async function upsertPin(pin) {
   try {
-    const pinUrl = pin.pinUrl;
+    let pinUrl = pin.pinUrl;
     if (!pinUrl) return;
+    pinUrl = pinUrl.split('?')[0].replace(/\/$/, "");
+    pin.pinUrl = pinUrl; // normalize the saved data too
     const docId = Buffer.from(pinUrl).toString('base64');
     if (!pin.createdAt) pin.createdAt = new Date().toISOString();
     await firestoreDb.collection("pins").doc(docId).set(pin, { merge: true });
@@ -79,6 +81,9 @@ async function saveBatchPins(pins, newBatchId, timestamp) {
     let opCount = 0;
     
     for (const pin of pins) {
+      if (pin.pinUrl) {
+        pin.pinUrl = pin.pinUrl.split('?')[0].replace(/\/$/, "");
+      }
       const docId = Buffer.from(pin.pinUrl).toString("base64");
       const docRef = firestoreDb.collection("pins").doc(docId);
       batch.set(docRef, {

@@ -1570,7 +1570,7 @@
       if (f.quality.includes('Audio')) icon = '🎵';
       
       return `
-        <div class="quality-item" onclick="selectQuality(this, '${f.format_id}')">
+        <div class="quality-item" onclick="selectQuality(this, '${f.format_id}', '${f.url || ''}')" data-url="${f.url || ''}">
           <div class="quality-info">
             <span class="quality-icon">${icon}</span>
             <div style="display:flex; flex-direction:column">
@@ -1583,10 +1583,13 @@
     }).join('');
   }
 
-  function selectQuality(el, formatId) {
+  let selectedVideoUrl = null;
+
+  function selectQuality(el, formatId, videoUrl) {
     document.querySelectorAll('.quality-item').forEach(i => i.classList.remove('selected'));
     el.classList.add('selected');
     selectedQuality = formatId;
+    selectedVideoUrl = videoUrl || el.dataset.url || null;
     document.getElementById('btnDownloadNow').disabled = false;
   }
 
@@ -1607,7 +1610,7 @@
       const res = await fetch(`${API}/download`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: currentVideoUrl, quality: selectedQuality, format: 'mp4' })
+        body: JSON.stringify({ url: currentVideoUrl, videoUrl: selectedVideoUrl, quality: selectedQuality, format: 'mp4' })
       });
 
       if (!res.ok) throw new Error('Download failed');

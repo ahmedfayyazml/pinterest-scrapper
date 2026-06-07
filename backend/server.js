@@ -633,129 +633,123 @@ app.get("/api/pins/details", async (req, res) => {
   }
 });
 
-// POST /api/info — Fetch available qualities for a video
+// POST /api/info — Return available download qualities from cached pin data
 app.post("/api/info", async (req, res) => {
   const { url } = req.body;
   if (!url) return res.status(400).json({ success: false, error: "Missing url" });
 
   try {
-    console.log(`[/api/info] Fetching info for: ${url}`);
-    const details = await scrapePinDetails(url);
-    
-    if (!details.success || !details.videoSrc) {
-      return res.status(404).json({ success: false, error: "Video source not found" });
+    console.log(`[/api/info] Fetching cached details for: ${url}`);
+    const allPins = await db.getAllPins();
+    const cached = allPins.find(p => p.pinUrl === url);
+
+    if (!cached || !cached.videoSrc) {
+      // Not cached yet — scrape live
+      const details = await scrapePinDetails(url);
+      if (!details.success || !details.videoSrc) {
+        return res.status(404).json({ success: false, error: "Video source not found" });
+      }
+      const formats = buildDownloadFormats(details.videoSrc, details.qualities || []);
+      return res.json({ success: true, title: details.title, formats });
     }
 
-    // Return a variety of formats (some derived from the main source)
-    res.json({
-      success: true,
-      title: details.title,
-      formats: [
-        {
-          format_id: "best",
-          quality: "Best",
-          label: "🎬 Best Available",
-          filesize: "Varies",
-          url: details.videoSrc
-        },
-        {
-          format_id: "1080p",
-          quality: "1080p",
-          label: "📺 FHD (1080p)",
-          filesize: "~ 400 MB",
-          url: details.videoSrc
-        },
-        {
-          format_id: "720p",
-          quality: "720p",
-          label: "📺 HD (720p)",
-          filesize: "~ 200 MB",
-          url: details.videoSrc
-        },
-        {
-          format_id: "480p",
-          quality: "480p",
-          label: "📺 SD (480p)",
-          filesize: "~ 100 MB",
-          url: details.videoSrc
-        },
-        {
-          format_id: "mp3",
-          quality: "Audio",
-          label: "🎵 Audio Only (MP3)",
-          filesize: "~ 5 MB",
-          url: details.videoSrc
-        }
-      ]
-    });
+    const formats = buildDownloadFormats(cached.videoSrc, cached.qualities || []);
+    res.json({ success: true, title: cached.title, formats });
   } catch (err) {
     console.error("[/api/info] Error:", err.message);
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// POST /api/download — Stream video download via yt-dlp
+// Helper — build download format list from real MP4 URLs
+function buildDownloadFormats(bestUrl, qualities) {
+  const formats = [];
+
+  // Add per-resolution formats from real qualities array
+  if (qualities && qualities.length > 0) {
+    qualities
+      .filter(q => q.protocol === 'mp4' && q.url)
+      .sort((a, b) => (b.height || 0) - (a.height || 0))
+      .forEach(q => {
+        const sizeEstimate = q.tbr ? `~${Math.round(q.tbr * 60 / 8 / 1024)} MB` : 'Unknown size';
+        formats.push({
+          format_id: q.label,
+          quality: q.label,
+          label: `📺 ${q.label}${q.tbr ? ` — ${q.tbr}kbps` : ''}`,
+          filesize: sizeEstimate,
+          url: q.url
+        });
+      });
+  }
+
+  // Always include a Best Quality entry at the top
+  if (formats.length === 0 || formats[0].url !== bestUrl) {
+    formats.unshift({
+      format_id: 'best',
+      quality: 'Best',
+      label: '🎬 Best Available',
+      filesize: 'Varies',
+      url: bestUrl
+    });
+  }
+
+  return formats;
+}
+
+// POST /api/download — Stream a direct MP4 URL to the client
 app.post("/api/download", async (req, res) => {
-  const { url, quality, format } = req.body;
+  const { url, videoUrl, quality } = req.body;
   if (!url) return res.status(400).json({ success: false, error: "Missing url" });
 
+  // videoUrl is the direct MP4 src; url is the Pinterest pin URL (fallback)
+  const targetMp4 = videoUrl || null;
+
   try {
-    console.log(`[/api/download] Spawning yt-dlp to stream: ${url} (${quality || 'best'})`);
-    
-    const { spawn } = require("child_process");
-    
-    // Set headers for file download
-    res.setHeader("Content-Type", "video/mp4");
-    res.setHeader("Content-Disposition", 'attachment; filename="pinterest_video.mp4"');
+    if (targetMp4) {
+      // Fast path: stream the direct MP4 we already have
+      console.log(`[/api/download] Streaming direct MP4: ${targetMp4.substring(0, 80)}...`);
 
-    // Build yt-dlp arguments
-    const args = ["-o", "-"];
+      const response = await axios.get(targetMp4, {
+        responseType: 'stream',
+        headers: {
+          'Referer': 'https://www.pinterest.com/',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36'
+        },
+        timeout: 60000
+      });
 
-    // Add proxy if available and quota permits
-    if (proxyManager.canUseProxy()) {
-      args.push("--proxy", proxyManager.getProxyUrl());
-      proxyManager.useProxy();
-    }
-    
-    // If quality or format is audio-only
-    if (quality === "mp3" || format === "mp3" || quality === "Audio") {
-      args.push("-f", "ba"); // best audio
-      res.setHeader("Content-Type", "audio/mpeg");
-      res.setHeader("Content-Disposition", 'attachment; filename="pinterest_audio.mp3"');
-    } else {
-      args.push("-f", "bv*+ba/b"); // best video and audio merged
-    }
-    
-    args.push(url);
-
-    const child = spawn("yt-dlp", args);
-    
-    // Pipe stdout of yt-dlp directly to the HTTP response
-    child.stdout.pipe(res);
-
-    child.stderr.on("data", (data) => {
-      // Log progress or debug info from yt-dlp
-      console.log(`[download-stream-stderr] ${data.toString().trim()}`);
-    });
-
-    child.on("close", (code) => {
-      console.log(`[/api/download] yt-dlp streaming finished with code ${code}`);
-      res.end();
-    });
-
-    // If request is aborted by the client, kill the yt-dlp process to free resources
-    req.on("close", () => {
-      if (!child.killed) {
-        console.log(`[/api/download] Request aborted. Killing yt-dlp process.`);
-        child.kill("SIGKILL");
+      const safeQuality = (quality || 'video').replace(/[^\w\d\-]/g, '_');
+      res.setHeader('Content-Type', 'video/mp4');
+      res.setHeader('Content-Disposition', `attachment; filename="pinvid_${safeQuality}.mp4"`);
+      if (response.headers['content-length']) {
+        res.setHeader('Content-Length', response.headers['content-length']);
       }
-    });
-
+      response.data.pipe(res);
+      response.data.on('end', () => console.log(`[/api/download] Stream complete`));
+      response.data.on('error', err => {
+        console.error(`[/api/download] Stream error: ${err.message}`);
+        if (!res.headersSent) res.status(502).end();
+      });
+    } else {
+      // Slow fallback: re-scrape then download via yt-dlp
+      console.log(`[/api/download] No direct MP4 url, falling back to yt-dlp for: ${url}`);
+      const { spawn } = require('child_process');
+      res.setHeader('Content-Type', 'video/mp4');
+      res.setHeader('Content-Disposition', 'attachment; filename="pinvid.mp4"');
+      const args = ['-o', '-', '-f', 'bv*+ba/b', url];
+      if (proxyManager.canUseProxy()) {
+        args.push('--proxy', proxyManager.getProxyUrl());
+        proxyManager.useProxy();
+      }
+      const child = spawn('yt-dlp', args);
+      child.stdout.pipe(res);
+      child.stderr.on('data', d => console.log(`[yt-dlp-stderr] ${d.toString().trim()}`));
+      child.on('close', code => { console.log(`[/api/download] yt-dlp exit ${code}`); res.end(); });
+      req.on('close', () => { if (!child.killed) child.kill('SIGKILL'); });
+    }
   } catch (err) {
     console.error("[/api/download] Error:", err.message);
-    if (!res.headersSent) {
-      res.status(500).json({ success: false, error: "Failed to download video" });
-    }
+    if (!res.headersSent) res.status(500).json({ success: false, error: "Download failed" });
   }
 });
 

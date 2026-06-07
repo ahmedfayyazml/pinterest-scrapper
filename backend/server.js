@@ -853,6 +853,38 @@ app.get("/api/status", (req, res) => {
   });
 });
 
+// GET /api/admin/reset-to-480p — Wipe all cached video URLs and re-fetch at 480p
+app.get('/api/admin/reset-to-480p', async (req, res) => {
+  try {
+    console.log('[reset-480p] ─── Starting 480p reset...');
+
+    // 1. Clear all cached video data from Firestore
+    const cleared = await db.clearAllVideoData();
+    console.log(`[reset-480p] Cleared video data for ${cleared} pins.`);
+
+    // 2. Reset the batch scrape timestamp so next cron run re-scrapes
+    currentBatchId = null;
+    lastScrapedTime = null;
+
+    // 3. Kick off link refresh immediately (re-fetches 480p URLs for all pins)
+    res.json({
+      success: true,
+      message: `Cleared ${cleared} pins. Link refresh will start in a few seconds to re-fetch all videos at 480p.`
+    });
+
+    // Run link refresh after a short delay (let response finish first)
+    setTimeout(async () => {
+      console.log('[reset-480p] Starting link refresh job (480p re-fetch)...');
+      await runLinkRefresh();
+      console.log('[reset-480p] ─── 480p re-fetch complete!');
+    }, 2000);
+
+  } catch (err) {
+    console.error('[reset-480p] Error:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // Fallback → serve frontend
 app.get("*", (req, res) => {
   res.sendFile(path.join(__dirname, "../frontend/public/index.html"));

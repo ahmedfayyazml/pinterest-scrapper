@@ -275,27 +275,47 @@ function fetchPinDetailsYTDLP(pinUrl, { forceNoProxy = false } = {}) {
             !f.url.includes('.cmfv')
           );
 
-          // 3. Pick best available MP4 or non-HLS (sorted by bitrate, highest first)
+          // ── TARGET QUALITY: 480p MAX ────────────────────────────────
+          // Prefer the 480p MP4. If not available, take the next best
+          // resolution that is ≤ 480p. Only fall back to higher if there
+          // is literally nothing at or below 480p.
           const preferred = mp4Formats.length > 0 ? mp4Formats : nonHlsFormats;
           if (preferred.length > 0) {
-            preferred.sort((a, b) => (b.tbr || 0) - (a.tbr || 0));
-            videoSrc = preferred[0].url;
-            console.log(`[scraper] Selected format: ${preferred[0].ext || 'unknown'} @ ${preferred[0].tbr || '?'}kbps (${mp4Formats.length} mp4, ${nonHlsFormats.length} non-hls, ${allFormats.length} total)`);
+            // Sort descending by height so we can find the best ≤480p
+            preferred.sort((a, b) => (b.height || 0) - (a.height || 0));
+
+            // Look for best ≤ 480p first
+            const under480 = preferred.filter(f => (f.height || 0) <= 480);
+            // Exact 480p
+            const exact480 = preferred.find(f => f.height === 480);
+
+            let chosen;
+            if (exact480) {
+              chosen = exact480; // ideal: 480p
+            } else if (under480.length > 0) {
+              chosen = under480[0]; // best below 480p (e.g. 360p)
+            } else {
+              // Nothing at or below 480p — take lowest available (least bad)
+              chosen = preferred[preferred.length - 1];
+            }
+
+            videoSrc = chosen.url;
+            console.log(`[scraper] Selected 480p-target format: ${chosen.ext || 'unknown'} @ ${chosen.height || '?'}p / ${chosen.tbr || '?'}kbps`);
           } else {
             console.log(`[scraper] WARNING: No direct MP4 found for this pin. videoSrc will be empty.`);
           }
 
-          // Build qualities array — MP4 only, multiple resolutions
+          // Build qualities array — MP4 only, cap at 480p
+          // Exclude anything above 480p (720p, 1080p, etc.)
           const seenHeights = new Set();
           mp4Formats
-            .filter(f => f.height)
+            .filter(f => f.height && f.height <= 480)
             .sort((a, b) => (b.height || 0) - (a.height || 0))
             .forEach(f => {
               if (seenHeights.has(f.height)) return;
               seenHeights.add(f.height);
-              const label = f.height >= 720 ? '720p' : `${f.height}p`;
               qualities.push({
-                label,
+                label: `${f.height}p`,
                 height: f.height,
                 tbr: Math.round(f.tbr || 0),
                 url: f.url,
@@ -303,9 +323,9 @@ function fetchPinDetailsYTDLP(pinUrl, { forceNoProxy = false } = {}) {
               });
             });
 
-          // Sort: highest quality first
+          // Sort: highest quality first (still all ≤ 480p)
           qualities.sort((a, b) => (b.height || 0) - (a.height || 0));
-          console.log(`[scraper] Qualities available: ${qualities.map(q => `${q.label}@${q.tbr}k[${q.protocol}]`).join(', ') || 'none'}`);
+          console.log(`[scraper] Qualities (480p cap): ${qualities.map(q => `${q.label}@${q.tbr}k`).join(', ') || 'none'}`);
         }
         
         if (!videoSrc) {

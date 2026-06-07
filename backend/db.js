@@ -121,11 +121,42 @@ async function saveBatchPins(pins, newBatchId, timestamp) {
   }
 }
 
+async function clearAllVideoData() {
+  try {
+    console.log('[db] Clearing all cached videoSrc/qualities from Firestore...');
+    const snapshot = await firestoreDb.collection('pins').get();
+    let batch = firestoreDb.batch();
+    let opCount = 0;
+    let totalCleared = 0;
+    snapshot.forEach(doc => {
+      batch.update(doc.ref, {
+        videoSrc: firestoreDb.FieldValue?.delete() || '',
+        qualities: [],
+        linksRefreshedAt: null
+      });
+      opCount++;
+      totalCleared++;
+      if (opCount === 500) {
+        batch.commit();
+        batch = firestoreDb.batch();
+        opCount = 0;
+      }
+    });
+    if (opCount > 0) await batch.commit();
+    console.log(`[db] Cleared video data for ${totalCleared} pins.`);
+    return totalCleared;
+  } catch (error) {
+    console.error('Firestore clearAllVideoData failed:', error.message);
+    return 0;
+  }
+}
+
 module.exports = {
   upsertPin,
   getAllPins,
   searchPins,
   getLatestPin,
   getPinsByBatch,
-  saveBatchPins
+  saveBatchPins,
+  clearAllVideoData
 };

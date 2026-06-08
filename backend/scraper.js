@@ -145,13 +145,6 @@ async function scrape200Pins() {
     console.log("[scraper] Fetching 200 trending video pins...");
 
     const fallbacks = [
-      "aesthetic videos", "nature videos", "funny videos", "cooking videos", 
-      "satisfying videos", "cat videos", "dog videos", "car videos", 
-      "travel videos", "street photography videos", "art videos", 
-      "fashion videos", "gaming videos", "workout videos", 
-      "skateboarding videos", "music videos", "dance videos", 
-      "tech videos", "diy videos", "motivation videos", 
-    const fallbacks = [
       "Food and Beverage videos", "Home Decor videos", "DIY and Crafts videos",
       "Style and Fashion videos", "Beauty and Makeup videos", "Hair Styling videos",
       "Nail Art videos", "Fitness and Workouts videos", "Gardening and Plants videos",

@@ -1,7 +1,7 @@
-require('dotenv').config();
+const path = require("path");
+require('dotenv').config({ path: path.resolve(__dirname, '.env') });
 const express = require("express");
 const cors = require("cors");
-const path = require("path");
 const cron = require("node-cron");
 const axios = require("axios");
 const { scrape200Pins, scrapePinDetails, fetchRelatedPins } = require("./scraper");

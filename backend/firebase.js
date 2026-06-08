@@ -1,11 +1,14 @@
-require('dotenv').config();
-const admin = require('firebase-admin');
 const path = require('path');
+require('dotenv').config({ path: path.resolve(__dirname, '.env') });
+const admin = require('firebase-admin');
 
 const serviceAccountPath = process.env.FIREBASE_KEY_PATH || './serviceAccountKey.json';
 
 try {
-  const serviceAccount = require(path.resolve(serviceAccountPath));
+  const absoluteServiceAccountPath = path.isAbsolute(serviceAccountPath)
+    ? serviceAccountPath
+    : path.resolve(__dirname, serviceAccountPath);
+  const serviceAccount = require(absoluteServiceAccountPath);
   if (!admin.apps.length) {
     admin.initializeApp({
       credential: admin.credential.cert(serviceAccount)
@@ -19,3 +22,4 @@ try {
 const db = admin.firestore();
 
 module.exports = { admin, db };
+

@@ -1,6 +1,6 @@
-require('dotenv').config();
-const Database = require("better-sqlite3");
 const path = require("path");
+require('dotenv').config({ path: path.resolve(__dirname, '.env') });
+const Database = require("better-sqlite3");
 const fs = require("fs");
 const { admin, db } = require("./firebase");
 

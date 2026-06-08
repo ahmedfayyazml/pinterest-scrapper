@@ -274,9 +274,20 @@ async function scrape200Pins() {
 
     console.log(`[scraper] ✅ Finished collecting ${allPins.length} video pins across all categories`);
     return allPins;
+  } catch (error) {
+    console.error("[scraper] Real error during scrape200Pins:", error);
+    throw error;
   } finally {
-    await context.close();
-    await browser.close();
+    try {
+      if (context) await context.close();
+    } catch (e) {
+      console.warn("[scraper] Failed to close context:", e.message);
+    }
+    try {
+      if (browser) await browser.close();
+    } catch (e) {
+      console.warn("[scraper] Failed to close browser:", e.message);
+    }
   }
 }
 
@@ -313,9 +324,20 @@ async function scrapeByKeyword(keyword) {
     const pins = await extractVideoPins(page);
     console.log(`[scraper] Found ${pins.length} video pins for "${keyword}"`);
     return pins;
+  } catch (error) {
+    console.error("[scraper] Real error during scrapeByKeyword:", error);
+    throw error;
   } finally {
-    await context.close();
-    await browser.close();
+    try {
+      if (context) await context.close();
+    } catch (e) {
+      console.warn("[scraper] Failed to close context:", e.message);
+    }
+    try {
+      if (browser) await browser.close();
+    } catch (e) {
+      console.warn("[scraper] Failed to close browser:", e.message);
+    }
   }
 }
 

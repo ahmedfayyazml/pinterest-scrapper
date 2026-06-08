@@ -227,6 +227,9 @@ async function runBatchScrape() {
     currentBatchId = newBatchId;
     lastScrapedTime = timestamp;
     totalPinsInBatch = pins.length;
+    
+    console.log("[batch-scraper] Immediately triggering link refresh to populate videoSrc for new batch...");
+    runLinkRefresh();
   } catch (err) {
     console.error("[batch-scraper] Error during batch scrape:", err);
   }

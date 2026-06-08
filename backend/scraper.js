@@ -154,46 +154,63 @@ async function scrape200Pins() {
       "home decor videos", "makeup videos", "anime edits", 
       "movie clips", "sports highlights"
     ];
-    const randomKeyword = fallbacks[Math.floor(Math.random() * fallbacks.length)];
+    // Shuffle fallbacks and pick 5 random categories
+    const shuffledKeywords = fallbacks.sort(() => 0.5 - Math.random());
+    const selectedKeywords = shuffledKeywords.slice(0, 5);
     
-    await page.goto(`https://www.pinterest.com/search/pins/?q=${encodeURIComponent(randomKeyword)}&rs=typed`, {
-      waitUntil: "domcontentloaded",
-      timeout: 30000,
-    });
-
-    await page.waitForTimeout(3000);
+    let allPins = [];
     
-    // Close any popups/overlays
-    try {
-      await page.evaluate(() => {
-        const selectors = ['[aria-label="Close"]', '[data-test-id="close-button"]', '.FullPageSignup__closeButton'];
-        selectors.forEach(s => document.querySelector(s)?.click());
+    for (const keyword of selectedKeywords) {
+      if (allPins.length >= 200) break;
+      
+      console.log(`[scraper] Fetching pins for category: ${keyword}`);
+      await page.goto(`https://www.pinterest.com/search/pins/?q=${encodeURIComponent(keyword)}&rs=typed`, {
+        waitUntil: "domcontentloaded",
+        timeout: 30000,
       });
-    } catch (e) {}
 
-    let pins = [];
-    let attempts = 0;
-    while (pins.length < 200 && attempts < 30) {
-      await page.evaluate(() => window.scrollBy(0, window.innerHeight * 2));
-      await sleep(1000 + Math.random() * 1000);
+      await page.waitForTimeout(3000);
       
-      const newPins = await extractVideoPins(page);
+      // Close any popups/overlays
+      try {
+        await page.evaluate(() => {
+          const selectors = ['[aria-label="Close"]', '[data-test-id="close-button"]', '.FullPageSignup__closeButton'];
+          selectors.forEach(s => document.querySelector(s)?.click());
+        });
+      } catch (e) {}
+
+      let currentKeywordPins = [];
+      let attempts = 0;
+      // We want roughly 40 pins per category (200 / 5)
+      const targetForThisKeyword = 40;
       
-      // Deduplicate
-      const seen = new Set(pins.map(p => p.pinUrl));
-      for (const p of newPins) {
-        if (!seen.has(p.pinUrl)) {
-          pins.push(p);
-          seen.add(p.pinUrl);
+      while (currentKeywordPins.length < targetForThisKeyword && attempts < 15) {
+        await page.evaluate(() => window.scrollBy(0, window.innerHeight * 2));
+        await sleep(1000 + Math.random() * 1000);
+        
+        const newPins = await extractVideoPins(page);
+        
+        // Deduplicate against both the globally collected pins and currently collected pins
+        const seen = new Set([...allPins, ...currentKeywordPins].map(p => p.pinUrl));
+        for (const p of newPins) {
+          if (!seen.has(p.pinUrl)) {
+            currentKeywordPins.push(p);
+            seen.add(p.pinUrl);
+          }
         }
+        
+        console.log(`[scraper] Collected ${currentKeywordPins.length}/${targetForThisKeyword} pins for ${keyword}...`);
+        attempts++;
       }
       
-      console.log(`[scraper] Collected ${pins.length}/200 pins...`);
-      attempts++;
+      allPins = allPins.concat(currentKeywordPins);
     }
 
+    // Shuffle the final array so the frontend gets a completely mixed feed (not grouped by category)
+    allPins = allPins.sort(() => 0.5 - Math.random());
+    
     // Limit to exactly 200
-    pins = pins.slice(0, 200);
+    let pins = allPins.slice(0, 200);
 
     console.log(`[scraper] Finished collecting ${pins.length} video pins`);
     return pins;

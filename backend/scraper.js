@@ -144,19 +144,68 @@ async function scrape200Pins() {
   try {
     console.log("[scraper] Fetching 200 trending video pins...");
 
-    // Use ALL 20 categories and shuffle them for variety
+    // Full mega-list of 100+ categories — pick 20 random ones each run for maximum rotation
     const allCategories = [
-      "Food and Beverage videos", "Home Decor videos", "DIY and Crafts videos",
-      "Style and Fashion videos", "Beauty and Makeup videos", "Hair Styling videos",
-      "Nail Art videos", "Fitness and Workouts videos", "Gardening and Plants videos",
-      "Home Organization videos", "Travel and Itineraries videos", "Event and Wedding Planning videos",
-      "Art and Illustration videos", "Mental Health and Wellness videos", "Personal Finance and Budgeting videos",
-      "Productivity and Planning videos", "Pets and Animal Care videos", "Photography and Videography videos",
+      // Lifestyle & Entertainment
+      "Gaming Walkthroughs videos", "Tech Gadget Reviews videos", "Personal Finance Investing videos",
+      "AI Tutorials Automation videos", "Daily Life Vlogs videos", "Educational Explainers videos",
+      "Fitness Workout Routines videos", "Product Unboxing videos", "ASMR Content videos",
+      "Video Podcasts", "Cooking Recipe Tutorials videos", "Software Coding Lessons videos",
+      "Travel Vlogs videos", "Documentary Deep Dives videos", "Comedy Skits videos",
+      "Reaction Videos", "Challenge Tag Videos", "Music Covers videos",
+      "Fashion OOTD videos", "Beauty Makeup Tutorials videos",
+      // Gaming
+      "Game Lets Plays videos", "Game Highlights Speedruns videos", "Movie Media Reviews videos",
+      "Book Literary Reviews videos", "Motivational Speeches videos", "True Crime Storytelling videos",
+      "Quiet Meditation Sessions videos", "Pet Animal Compilations videos", "Product Showcases videos",
+      "Behind the Scenes BTS videos",
+      // Business
+      "Company Culture Meet the Team videos", "Client Testimonials videos", "Webinar Recordings videos",
+      "Social Media Ads UGC videos", "App Promos videos", "Recruitment Job Intros videos",
+      "Holiday Seasonal Greetings videos", "Corporate Training videos", "Sales Presentations videos",
+      "FAQ Q&A Sessions videos",
+      // Production Styles
+      "Talking Head Commentary videos", "Screen Recordings Screencasts", "360 Degree VR Experiences videos",
+      "Time Lapse videos", "Slow Motion Footage videos", "Drone Aerial Cinematography videos",
+      "Live Streams videos", "Slideshows Photo Collages videos", "Kinetic Typography videos",
+      "2D Animation videos", "3D Animation videos", "Motion Graphics videos",
+      "Green Screen Chroma Key videos", "Split Screen Interviews videos",
+      // Personal Content
+      "Silent Visual Storytelling videos", "YouTube Shorts Vertical Reels", "Day in the Life Professional videos",
+      "Whats in My Bag videos", "Get Ready With Me GRWM videos", "Comparison Cheap vs Expensive videos",
+      "Travel Hidden Gem Guides videos", "Collection Tours Sneakers videos", "Failed Blooper Reels videos",
+      "Flashback Throwback Memories videos",
+      // Educational
+      "Whiteboard Animations videos", "Infographic Videos", "News Recaps videos",
+      "Language Lessons videos", "Science Experiments videos", "DIY Crafting videos",
+      "Myth Busting videos", "Career Guidance videos", "Philosophy Thought Pieces videos",
+      "Stand Up Comedy Clips videos",
+      // Creative
+      "Prank Videos", "Lyric Videos", "Dance Choreography videos",
+      "Parody Spoof Videos", "Short Films", "Stop Motion Animation videos",
+      "Personality Character Skits videos", "ASMR Roleplay videos",
+      // Marketing
+      "Pitch Videos", "Video Emails", "Client Onboarding videos",
+      "Press Release Media Kits videos", "Hyper Lapse videos", "User Generated Ad Content",
+      // Finance
+      "Debt Payoff Documentaries videos", "First Time Investor Guides videos",
+      "Prompt Engineering Masterclasses videos", "Automation Workflow Guides videos",
+      "Property Investing Real Estate videos", "Micro Hobby Tutorials videos",
+      // Trending
+      "Transformation Before After videos", "Trend Jacking Audio Mashups videos",
+      "Faceless AI Avatars videos", "Local Restaurant City Guides videos",
+      // Original categories
+      "Food and Beverage videos", "Home Decor videos", "Style and Fashion videos",
+      "Hair Styling videos", "Nail Art videos", "Gardening and Plants videos",
+      "Home Organization videos", "Event and Wedding Planning videos", "Art and Illustration videos",
+      "Mental Health and Wellness videos", "Productivity and Planning videos", "Photography and Videography videos",
       "Graphic Design and Lettering videos", "Business and Marketing Strategy videos"
     ];
 
-    // Shuffle all 20 categories — use all of them for maximum variety
-    const selectedKeywords = allCategories.sort(() => 0.5 - Math.random());
+    // Shuffle and pick 20 random categories each run — over multiple runs this covers all 100+ categories
+    const shuffled = allCategories.sort(() => 0.5 - Math.random());
+    const selectedKeywords = shuffled.slice(0, 20);
+    console.log(`[scraper] Selected categories this run: ${selectedKeywords.join(', ')}`);
     // Target: 10 pins per category × 20 categories = 200 pins
     const targetPerCategory = 10;
     
@@ -301,56 +350,43 @@ function fetchPinDetailsYTDLP(pinUrl, { forceNoProxy = false } = {}) {
         if (info.formats && info.formats.length > 0) {
           const allFormats = info.formats.filter(f => f.url);
 
-          // 1. Prefer direct MP4 formats (exclude any HLS/m3u8)
-          const mp4Formats = allFormats.filter(f =>
+          // ── TIER 1: Direct MP4 from Pinterest CDN (v1.pinimg.com) ────────
+          // Pinterest serves direct .mp4 files (e.g. V_720P format). These are
+          // the most reliable — grab ANY direct mp4 regardless of resolution.
+          const directMp4Formats = allFormats.filter(f =>
             (f.url.includes('.mp4') || f.ext === 'mp4') &&
-            !f.url.includes('.m3u8') && !f.protocol?.includes('m3u8')
-          );
-
-          // 2. Any non-HLS, non-cmfv format as fallback
-          const nonHlsFormats = allFormats.filter(f =>
-            !f.url.includes('.m3u8') && !f.protocol?.includes('m3u8') &&
+            !f.url.includes('.m3u8') &&
+            !f.protocol?.includes('m3u8') &&
             !f.url.includes('.cmfv')
           );
 
-          // ── TARGET QUALITY: 480p MAX ────────────────────────────────
-          // Prefer the 480p MP4. If not available, take the next best
-          // resolution that is ≤ 480p. Only fall back to higher if there
-          // is literally nothing at or below 480p.
-          const preferred = mp4Formats.length > 0 ? mp4Formats : nonHlsFormats;
-          if (preferred.length > 0) {
-            // Sort descending by height so we can find the best ≤480p
-            preferred.sort((a, b) => (b.height || 0) - (a.height || 0));
+          // ── TIER 2: HLS streams as fallback ──────────────────────────────
+          const hlsFormats = allFormats.filter(f =>
+            f.url.includes('.m3u8') || f.protocol?.includes('m3u8')
+          );
 
-            // Look for best ≤ 480p first
-            const under480 = preferred.filter(f => (f.height || 0) <= 480);
-            // Exact 480p
-            const exact480 = preferred.find(f => f.height === 480);
-
-            let chosen;
-            if (exact480) {
-              chosen = exact480; // ideal: 480p
-            } else if (under480.length > 0) {
-              chosen = under480[0]; // best below 480p (e.g. 360p)
-            } else {
-              // Nothing at or below 480p — take lowest available (least bad)
-              chosen = preferred[preferred.length - 1];
-            }
-
+          if (directMp4Formats.length > 0) {
+            // Pick the lowest available resolution direct mp4 (save bandwidth)
+            directMp4Formats.sort((a, b) => (a.height || 9999) - (b.height || 9999));
+            const chosen = directMp4Formats[0];
             videoSrc = chosen.url;
-            console.log(`[scraper] Selected 480p-target format: ${chosen.ext || 'unknown'} @ ${chosen.height || '?'}p / ${chosen.tbr || '?'}kbps`);
+            console.log(`[scraper] ✅ Direct MP4 selected: ${chosen.ext || 'mp4'} @ ${chosen.height || '?'}p | url starts: ${chosen.url.substring(0,60)}`);
+          } else if (hlsFormats.length > 0) {
+            // Fall back to best HLS stream
+            hlsFormats.sort((a, b) => (a.tbr || 0) - (b.tbr || 0));
+            const chosen = hlsFormats[0];
+            videoSrc = chosen.url;
+            console.log(`[scraper] ⚠️ HLS fallback: ${chosen.height || '?'}p @ ${chosen.tbr || '?'}kbps`);
           } else {
-            console.log(`[scraper] WARNING: No direct MP4 found for this pin. videoSrc will be empty.`);
+            console.log(`[scraper] ❌ No usable format found for this pin.`);
           }
 
-          // Build qualities array — MP4 only, cap at 480p
-          // Exclude anything above 480p (720p, 1080p, etc.)
+          // Build quality picker list (direct mp4 only, all resolutions)
           const seenHeights = new Set();
-          mp4Formats
-            .filter(f => f.height && f.height <= 480)
+          directMp4Formats
             .sort((a, b) => (b.height || 0) - (a.height || 0))
             .forEach(f => {
-              if (seenHeights.has(f.height)) return;
+              if (!f.height || seenHeights.has(f.height)) return;
               seenHeights.add(f.height);
               qualities.push({
                 label: `${f.height}p`,
@@ -361,9 +397,7 @@ function fetchPinDetailsYTDLP(pinUrl, { forceNoProxy = false } = {}) {
               });
             });
 
-          // Sort: highest quality first (still all ≤ 480p)
-          qualities.sort((a, b) => (b.height || 0) - (a.height || 0));
-          console.log(`[scraper] Qualities (480p cap): ${qualities.map(q => `${q.label}@${q.tbr}k`).join(', ') || 'none'}`);
+          console.log(`[scraper] Quality options: ${qualities.map(q => `${q.label}`).join(', ') || 'none'}`);
         }
         
         if (!videoSrc) {

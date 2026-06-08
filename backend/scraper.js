@@ -70,10 +70,10 @@ async function extractVideoPins(page) {
 
   await page.waitForTimeout(2000);
 
-  // Faster scroll for initial load
-  for (let i = 0; i < 6; i++) {
-    await page.evaluate(() => window.scrollBy(0, window.innerHeight * 2));
-    await sleep(800 + Math.random() * 500);
+  // Scroll aggressively to load more pins
+  for (let i = 0; i < 15; i++) {
+    await page.evaluate(() => window.scrollBy(0, window.innerHeight * 3));
+    await sleep(600 + Math.random() * 400);
   }
 
   const pins = await page.evaluate(() => {
@@ -144,7 +144,8 @@ async function scrape200Pins() {
   try {
     console.log("[scraper] Fetching 200 trending video pins...");
 
-    const fallbacks = [
+    // Use ALL 20 categories and shuffle them for variety
+    const allCategories = [
       "Food and Beverage videos", "Home Decor videos", "DIY and Crafts videos",
       "Style and Fashion videos", "Beauty and Makeup videos", "Hair Styling videos",
       "Nail Art videos", "Fitness and Workouts videos", "Gardening and Plants videos",
@@ -153,16 +154,16 @@ async function scrape200Pins() {
       "Productivity and Planning videos", "Pets and Animal Care videos", "Photography and Videography videos",
       "Graphic Design and Lettering videos", "Business and Marketing Strategy videos"
     ];
-    // Shuffle fallbacks and pick 10 random categories for HUGE variety
-    const shuffledKeywords = fallbacks.sort(() => 0.5 - Math.random());
-    const selectedKeywords = shuffledKeywords.slice(0, 10);
+
+    // Shuffle all 20 categories — use all of them for maximum variety
+    const selectedKeywords = allCategories.sort(() => 0.5 - Math.random());
+    // Target: 10 pins per category × 20 categories = 200 pins
+    const targetPerCategory = 10;
     
     let allPins = [];
     
     for (const keyword of selectedKeywords) {
-      if (allPins.length >= 200) break;
-      
-      console.log(`[scraper] Fetching pins for category: ${keyword}`);
+      console.log(`[scraper] Fetching pins for category: ${keyword} (have ${allPins.length} so far)`);
       await page.goto(`https://www.pinterest.com/search/pins/?q=${encodeURIComponent(keyword)}&rs=typed`, {
         waitUntil: "domcontentloaded",
         timeout: 30000,
@@ -180,12 +181,13 @@ async function scrape200Pins() {
 
       let currentKeywordPins = [];
       let attempts = 0;
-      // We want roughly 20 pins per category (200 / 10 = 20)
-      const targetForThisKeyword = 20;
-      
-      while (currentKeywordPins.length < targetForThisKeyword && attempts < 15) {
-        await page.evaluate(() => window.scrollBy(0, window.innerHeight * 2));
-        await sleep(1000 + Math.random() * 1000);
+      let lastCount = 0;
+      let stuckRounds = 0;
+
+      // Scroll up to 25 times per category to find enough video pins
+      while (currentKeywordPins.length < targetPerCategory && attempts < 25) {
+        await page.evaluate(() => window.scrollBy(0, window.innerHeight * 3));
+        await sleep(800 + Math.random() * 800);
         
         const newPins = await extractVideoPins(page);
         
@@ -198,21 +200,31 @@ async function scrape200Pins() {
           }
         }
         
-        console.log(`[scraper] Collected ${currentKeywordPins.length}/${targetForThisKeyword} pins for ${keyword}...`);
+        // If no new pins for 4 rounds, move on to next category
+        if (currentKeywordPins.length === lastCount) {
+          stuckRounds++;
+          if (stuckRounds >= 4) {
+            console.log(`[scraper] No new pins found for 4 rounds, moving on from: ${keyword}`);
+            break;
+          }
+        } else {
+          stuckRounds = 0;
+          lastCount = currentKeywordPins.length;
+        }
+        
+        console.log(`[scraper] ${keyword}: ${currentKeywordPins.length}/${targetPerCategory} video pins (attempt ${attempts+1})`);
         attempts++;
       }
       
+      console.log(`[scraper] ✓ Category done: ${keyword} → ${currentKeywordPins.length} pins`);
       allPins = allPins.concat(currentKeywordPins);
     }
 
-    // Shuffle the final array so the frontend gets a completely mixed feed (not grouped by category)
+    // Shuffle the final array so the frontend gets a completely mixed feed
     allPins = allPins.sort(() => 0.5 - Math.random());
-    
-    // Limit to exactly 200
-    let pins = allPins.slice(0, 200);
 
-    console.log(`[scraper] Finished collecting ${pins.length} video pins`);
-    return pins;
+    console.log(`[scraper] ✅ Finished collecting ${allPins.length} video pins across all categories`);
+    return allPins;
   } finally {
     await context.close();
     await browser.close();

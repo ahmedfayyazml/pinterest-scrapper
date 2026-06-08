@@ -235,8 +235,8 @@ async function runBatchScrape() {
   }
 }
 
-// Check every hour if 3 hours have passed
-cron.schedule("0 * * * *", checkAndRunScraper);
+// Run every 3 hours exactly
+cron.schedule("0 */3 * * *", checkAndRunScraper);
 checkAndRunScraper();
 
 // ─── LINK REFRESH CRON ────────────────────────────────────────────────────
@@ -302,16 +302,15 @@ async function runLinkRefresh() {
             linkRefreshStats.resolvedPins++;
             linkRefreshStats.pendingPins = Math.max(0, linkRefreshStats.pendingPins - 1);
           } else {
+            // Don't delete — just mark as failed and skip. Will retry next cycle.
             linkRefreshStats.failedPins++;
             linkRefreshStats.pendingPins = Math.max(0, linkRefreshStats.pendingPins - 1);
-            console.warn(`[link-refresh] Failed (no videoSrc): ${pin.pinUrl} - Deleting pin`);
-            await db.deletePin(pin.pinUrl);
+            console.warn(`[link-refresh] Failed (no videoSrc): ${pin.pinUrl} — keeping pin, will retry next cycle`);
           }
         } catch (err) {
           linkRefreshStats.failedPins++;
           linkRefreshStats.pendingPins = Math.max(0, linkRefreshStats.pendingPins - 1);
-          console.warn(`[link-refresh] Error for ${pin.pinUrl}: ${err.message} - Deleting pin`);
-          await db.deletePin(pin.pinUrl);
+          console.warn(`[link-refresh] Error for ${pin.pinUrl}: ${err.message} — keeping pin, will retry next cycle`);
         }
       }));
 

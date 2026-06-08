@@ -319,6 +319,33 @@ async function scrapeByKeyword(keyword) {
   }
 }
 
+// ─── HLS → MP4 CONVERTER ────────────────────────────────────────────────────
+// Pinterest CDN HLS URLs follow this exact pattern:
+//   https://v1.pinimg.com/videos/mc/hls/AA/BB/CC/HASH_480w.m3u8
+// The direct MP4 equivalent is:
+//   https://v1.pinimg.com/videos/mc/720p/AA/BB/CC/HASH.mp4
+//
+// This function converts any Pinterest HLS URL into a direct mp4 URL.
+function hlsToMp4(hlsUrl) {
+  try {
+    // Match the Pinterest HLS URL pattern
+    const match = hlsUrl.match(
+      /^(https:\/\/v\d+\.pinimg\.com\/videos\/mc\/)hls(\/[a-z0-9]+\/[a-z0-9]+\/[a-z0-9]+\/)([a-z0-9]+)(?:_\d+w)?\.m3u8$/i
+    );
+    if (match) {
+      const [, base, path, hash] = match;
+      const mp4Url = `${base}720p${path}${hash}.mp4`;
+      console.log(`[scraper] 🔄 Converted HLS → MP4: ${mp4Url.substring(0, 70)}...`);
+      return mp4Url;
+    }
+    // If URL doesn't match expected pattern, return original
+    console.log(`[scraper] ⚠️ HLS URL didn't match converter pattern, using original`);
+    return hlsUrl;
+  } catch (e) {
+    return hlsUrl;
+  }
+}
+
 // ─── YT-DLP EXTRACTION (with residential proxy support) ────────────────────
 
 function fetchPinDetailsYTDLP(pinUrl, { forceNoProxy = false } = {}) {
@@ -372,11 +399,12 @@ function fetchPinDetailsYTDLP(pinUrl, { forceNoProxy = false } = {}) {
             videoSrc = chosen.url;
             console.log(`[scraper] ✅ Direct MP4 selected: ${chosen.ext || 'mp4'} @ ${chosen.height || '?'}p | url starts: ${chosen.url.substring(0,60)}`);
           } else if (hlsFormats.length > 0) {
-            // Fall back to best HLS stream
+            // Convert HLS → direct MP4 using Pinterest CDN URL pattern
             hlsFormats.sort((a, b) => (a.tbr || 0) - (b.tbr || 0));
             const chosen = hlsFormats[0];
-            videoSrc = chosen.url;
-            console.log(`[scraper] ⚠️ HLS fallback: ${chosen.height || '?'}p @ ${chosen.tbr || '?'}kbps`);
+            const convertedUrl = hlsToMp4(chosen.url);
+            videoSrc = convertedUrl;
+            console.log(`[scraper] ✅ HLS→MP4 converted: ${chosen.height || '?'}p @ ${chosen.tbr || '?'}kbps`);
           } else {
             console.log(`[scraper] ❌ No usable format found for this pin.`);
           }

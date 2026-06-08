@@ -910,6 +910,7 @@
   <!-- GRID -->
   <div class="grid-wrap" id="gridWrap" style="display:none">
     <div class="grid" id="pinsGrid"></div>
+    <div id="infiniteScrollAnchor" style="height: 20px; width: 100%; margin-top: 40px; clear: both;"></div>
   </div>
 </div>
 
@@ -1487,6 +1488,10 @@
 
   // ── API CALLS ───────────────────────────────────────────────────────────
 
+  let allCachedPins = [];
+  let renderedPinCount = 0;
+  let isFetchingMore = false;
+
   async function loadRandom() {
     const hash = window.location.hash;
     if (hash && hash !== '#/') return;
@@ -1497,7 +1502,11 @@
       if (!data.success) throw new Error(data.error || 'Fetch failed');
 
       if (data.pins && data.pins.length > 0) {
-        renderPins(data.pins);
+        allCachedPins = data.pins;
+        renderedPinCount = 0;
+        document.getElementById('pinsGrid').innerHTML = '';
+        renderMorePins();
+        showGrid();
       } else {
         showEmpty();
       }
@@ -1507,6 +1516,40 @@
       console.error(err);
     }
   }
+
+  function renderMorePins() {
+    if (renderedPinCount >= allCachedPins.length) {
+      // Loop endlessly if they keep scrolling by fetching a new random batch!
+      if (!isFetchingMore) {
+        isFetchingMore = true;
+        fetch(`${API}/pins/random`).then(res => res.json()).then(data => {
+          if (data.success && data.pins && data.pins.length > 0) {
+            allCachedPins = allCachedPins.concat(data.pins);
+            renderMorePins();
+          }
+          isFetchingMore = false;
+        }).catch(() => { isFetchingMore = false; });
+      }
+      return;
+    }
+
+    const chunk = allCachedPins.slice(renderedPinCount, renderedPinCount + 20);
+    renderPins(chunk, true, 'pinsGrid');
+    renderedPinCount += 20;
+  }
+
+  // Setup infinite scroll observer
+  document.addEventListener('DOMContentLoaded', () => {
+    const anchor = document.getElementById('infiniteScrollAnchor');
+    if (anchor) {
+      const observer = new IntersectionObserver((entries) => {
+        if (entries[0].isIntersecting && allCachedPins.length > 0) {
+          renderMorePins();
+        }
+      }, { rootMargin: '400px' });
+      observer.observe(anchor);
+    }
+  });
 
   async function updateCacheCount() {
     // Hidden from nav bar

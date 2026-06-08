@@ -151,12 +151,18 @@ async function scrape200Pins() {
       "fashion videos", "gaming videos", "workout videos", 
       "skateboarding videos", "music videos", "dance videos", 
       "tech videos", "diy videos", "motivation videos", 
-      "home decor videos", "makeup videos", "anime edits", 
-      "movie clips", "sports highlights"
+    const fallbacks = [
+      "Food and Beverage videos", "Home Decor videos", "DIY and Crafts videos",
+      "Style and Fashion videos", "Beauty and Makeup videos", "Hair Styling videos",
+      "Nail Art videos", "Fitness and Workouts videos", "Gardening and Plants videos",
+      "Home Organization videos", "Travel and Itineraries videos", "Event and Wedding Planning videos",
+      "Art and Illustration videos", "Mental Health and Wellness videos", "Personal Finance and Budgeting videos",
+      "Productivity and Planning videos", "Pets and Animal Care videos", "Photography and Videography videos",
+      "Graphic Design and Lettering videos", "Business and Marketing Strategy videos"
     ];
-    // Shuffle fallbacks and pick 5 random categories
+    // Shuffle fallbacks and pick 10 random categories for HUGE variety
     const shuffledKeywords = fallbacks.sort(() => 0.5 - Math.random());
-    const selectedKeywords = shuffledKeywords.slice(0, 5);
+    const selectedKeywords = shuffledKeywords.slice(0, 10);
     
     let allPins = [];
     
@@ -181,8 +187,8 @@ async function scrape200Pins() {
 
       let currentKeywordPins = [];
       let attempts = 0;
-      // We want roughly 40 pins per category (200 / 5)
-      const targetForThisKeyword = 40;
+      // We want roughly 20 pins per category (200 / 10 = 20)
+      const targetForThisKeyword = 20;
       
       while (currentKeywordPins.length < targetForThisKeyword && attempts < 15) {
         await page.evaluate(() => window.scrollBy(0, window.innerHeight * 2));

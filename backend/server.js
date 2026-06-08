@@ -183,11 +183,11 @@ async function checkAndRunScraper() {
       currentBatchId = latestPin.batchId;
       lastScrapedTime = latestPin.scrapedAt;
       
-      if (hoursSince >= 24) {
-        console.log(`[startup] Last scrape was ${hoursSince.toFixed(1)} hours ago. Running scraper now (24-hour trigger).`);
+      if (hoursSince >= 3) {
+        console.log(`[startup] Last scrape was ${hoursSince.toFixed(1)} hours ago. Running scraper now (3-hour trigger).`);
         shouldRun = true;
       } else {
-        console.log(`[startup] Last scrape was ${hoursSince.toFixed(1)} hours ago. Skipping scrape (less than 24 hours).`);
+        console.log(`[startup] Last scrape was ${hoursSince.toFixed(1)} hours ago. Skipping scrape (less than 3 hours).`);
         try {
           if (currentBatchId) {
             const batchPins = await db.getPinsByBatch(currentBatchId);
@@ -209,7 +209,7 @@ async function checkAndRunScraper() {
 
 async function runBatchScrape() {
   try {
-    console.log("[batch-scraper] Starting 24-hour batch scrape...");
+    console.log("[batch-scraper] Starting 3-hour batch scrape...");
     const pins = await scrape200Pins();
     if (pins.length === 0) {
       console.log("[batch-scraper] Scrape returned 0 pins. Aborting batch save.");
@@ -232,7 +232,7 @@ async function runBatchScrape() {
   }
 }
 
-// Check every hour if 24 hours have passed
+// Check every hour if 3 hours have passed
 cron.schedule("0 * * * *", checkAndRunScraper);
 checkAndRunScraper();
 
@@ -831,13 +831,13 @@ app.get('/api/links/status', async (req, res) => {
   });
 });
 
-// GET /api/status ── 24-hour trigger status + proxy quota
+// GET /api/status ── 3-hour trigger status + proxy quota
 app.get("/api/status", (req, res) => {
   let nextScrapeIn = "Unknown";
   if (lastScrapedTime) {
     const lastScraped = new Date(lastScrapedTime);
     const msSince = Date.now() - lastScraped.getTime();
-    const msLeft = (24 * 60 * 60 * 1000) - msSince;
+    const msLeft = (3 * 60 * 60 * 1000) - msSince;
     if (msLeft > 0) {
       const hLeft = Math.floor(msLeft / (1000 * 60 * 60));
       const mLeft = Math.floor((msLeft % (1000 * 60 * 60)) / (1000 * 60));

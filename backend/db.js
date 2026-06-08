@@ -74,8 +74,6 @@ async function getPinsByBatch(batchId) {
 }
 
 async function saveBatchPins(pins, newBatchId, timestamp) {
-  const cutoffTime = new Date(Date.now() - 96 * 60 * 60 * 1000).toISOString();
-
   try {
     let batch = firestoreDb.batch();
     let opCount = 0;
@@ -104,9 +102,9 @@ async function saveBatchPins(pins, newBatchId, timestamp) {
       await batch.commit();
     }
     
-    // Delete old (older than 96 hours)
-    console.log(`[db] Deleting Firestore pins older than 96 hours (cutoff: ${cutoffTime})...`);
-    const oldDocsQuery = await firestoreDb.collection("pins").where("scrapedAt", "<", cutoffTime).get();
+    // Delete all older pins (everything before this new batch)
+    console.log(`[db] Deleting all old Firestore pins (keeping only new batch)...`);
+    const oldDocsQuery = await firestoreDb.collection("pins").where("scrapedAt", "<", timestamp).get();
     batch = firestoreDb.batch();
     opCount = 0;
     oldDocsQuery.forEach(doc => {

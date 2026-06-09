@@ -269,11 +269,40 @@ async function scrape200Pins() {
       allPins = allPins.concat(currentKeywordPins);
     }
 
-    // Shuffle the final array so the frontend gets a completely mixed feed
+    // We have pins. Let's make sure we have around 200 and shuffle them.
     allPins = allPins.sort(() => 0.5 - Math.random());
+    allPins = allPins.slice(0, 200);
 
-    console.log(`[scraper] ✅ Finished collecting ${allPins.length} video pins across all categories`);
-    return allPins;
+    console.log(`[scraper] Fetching video sources for ${allPins.length} pins before saving...`);
+    const enrichedPins = [];
+    const BATCH_SIZE = 5;
+
+    for (let i = 0; i < allPins.length; i += BATCH_SIZE) {
+      const batch = allPins.slice(i, i + BATCH_SIZE);
+      const results = await Promise.all(batch.map(async (pin) => {
+        try {
+          const details = await fetchPinDetailsYTDLP(pin.pinUrl, { forceNoProxy: true });
+          if (details && details.videoSrc) {
+             return {
+               ...pin,
+               videoSrc: details.videoSrc,
+               qualities: details.qualities || [],
+             };
+          }
+        } catch (e) {
+          console.warn(`[scraper] Error fetching details for ${pin.pinUrl}: ${e.message}`);
+        }
+        return null;
+      }));
+
+      for (const r of results) {
+        if (r) enrichedPins.push(r);
+      }
+      console.log(`[scraper] Resolved videoSrc batch ${Math.floor(i/BATCH_SIZE)+1}/${Math.ceil(allPins.length/BATCH_SIZE)} | Enriched: ${enrichedPins.length}`);
+    }
+
+    console.log(`[scraper] ✅ Finished collecting ${enrichedPins.length} fully enriched video pins.`);
+    return enrichedPins;
   } catch (error) {
     console.error("[scraper] Real error during scrape200Pins:", error);
     throw error;
@@ -350,19 +379,18 @@ async function scrapeByKeyword(keyword) {
 // This function converts any Pinterest HLS URL into a direct mp4 URL.
 function hlsToMp4(hlsUrl) {
   try {
-    // Match the Pinterest HLS URL pattern
-    const match = hlsUrl.match(
-      /^(https:\/\/v\d+\.pinimg\.com\/videos\/mc\/)hls(\/[a-z0-9]+\/[a-z0-9]+\/[a-z0-9]+\/)([a-z0-9]+)(?:_\d+w)?\.m3u8$/i
-    );
-    if (match) {
-      const [, base, path, hash] = match;
-      const mp4Url = `${base}720p${path}${hash}.mp4`;
-      console.log(`[scraper] 🔄 Converted HLS → MP4: ${mp4Url.substring(0, 70)}...`);
-      return mp4Url;
-    }
-    // If URL doesn't match expected pattern, return original
-    console.log(`[scraper] ⚠️ HLS URL didn't match converter pattern, using original`);
-    return hlsUrl;
+    let mp4Url = hlsUrl;
+    // Pinterest HLS URLs follow: https://v1.pinimg.com/videos/mc/hls/AA/BB/CC/HASH_480w.m3u8
+    // Directly replace /hls/ with /720p/
+    mp4Url = mp4Url.replace(/\/hls\//i, '/720p/');
+    // Remove resolution suffixes like _480w, _720w, _t1
+    mp4Url = mp4Url.replace(/_\d+w\.m3u8$/i, '.mp4');
+    mp4Url = mp4Url.replace(/_t\d+\.m3u8$/i, '.mp4');
+    // Ensure extension is mp4
+    mp4Url = mp4Url.replace(/\.m3u8$/i, '.mp4');
+    
+    console.log(`[scraper] 🔄 Converted HLS/m3u8 → MP4: ${mp4Url.substring(0, 70)}...`);
+    return mp4Url;
   } catch (e) {
     return hlsUrl;
   }

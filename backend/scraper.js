@@ -381,8 +381,8 @@ function hlsToMp4(hlsUrl) {
   try {
     let mp4Url = hlsUrl;
     // Pinterest HLS URLs follow: https://v1.pinimg.com/videos/mc/hls/AA/BB/CC/HASH_480w.m3u8
-    // Directly replace /hls/ with /720p/
-    mp4Url = mp4Url.replace(/\/hls\//i, '/720p/');
+    // Directly replace /hls/ with /480p/
+    mp4Url = mp4Url.replace(/\/hls\//i, '/480p/');
     // Remove resolution suffixes like _480w, _720w, _t1
     mp4Url = mp4Url.replace(/_\d+w\.m3u8$/i, '.mp4');
     mp4Url = mp4Url.replace(/_t\d+\.m3u8$/i, '.mp4');
@@ -443,8 +443,12 @@ function fetchPinDetailsYTDLP(pinUrl, { forceNoProxy = false } = {}) {
           );
 
           if (directMp4Formats.length > 0) {
-            // Pick the lowest available resolution direct mp4 (save bandwidth)
-            directMp4Formats.sort((a, b) => (a.height || 9999) - (b.height || 9999));
+            // Prioritize 480p format
+            directMp4Formats.sort((a, b) => {
+              const diffA = Math.abs((a.height || 9999) - 480);
+              const diffB = Math.abs((b.height || 9999) - 480);
+              return diffA - diffB;
+            });
             const chosen = directMp4Formats[0];
             videoSrc = chosen.url;
             console.log(`[scraper] ✅ Direct MP4 selected: ${chosen.ext || 'mp4'} @ ${chosen.height || '?'}p | url starts: ${chosen.url.substring(0,60)}`);

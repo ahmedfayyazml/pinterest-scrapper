@@ -2,7 +2,7 @@ const express = require("express");
 const cors = require("cors");
 const path = require("path");
 const cron = require("node-cron");
-const { scrape200Pins, scrapePinDetails } = require("./scraper");
+const { scrape200Pins, scrapePinDetails, fetchPinDetailsYTDLP, scrapePinDetailsFast } = require("./scraper");
 const { searchVideos, getCategoryFeed, fetchPinDetails } = require("./pinterest");
 const db = require("./db");
 
@@ -14,6 +14,9 @@ app.use(express.json());
 
 // Serve frontend static files
 app.use(express.static(path.join(__dirname, "../frontend/public")));
+
+// Serve remuxed files
+app.use('/pinterest/media', express.static('/var/www/vectorsbit-pinterest/backend/media'));
 
 // ─── BACKGROUND SCRAPER ────────────────────────────────────────────────────
 
@@ -36,13 +39,20 @@ async function checkAndRunScraper() {
       currentBatchId = latestPin.batchId;
       lastScrapedTime = latestPin.scrapedAt;
       
-      if (hoursSince >= 24) {
-        console.log(`[startup] Last scrape was ${hoursSince.toFixed(1)} hours ago. Running scraper now (24-hour trigger).`);
+      if (hoursSince >= 2) {
+        console.log(`[startup] Last scrape was ${hoursSince.toFixed(1)} hours ago. Running scraper now (2-hour trigger).`);
         shouldRun = true;
       } else {
-        console.log(`[startup] Last scrape was ${hoursSince.toFixed(1)} hours ago. Skipping scrape (less than 24 hours).`);
+        console.log(`[startup] Last scrape was ${hoursSince.toFixed(1)} hours ago. Skipping scrape (less than 2 hours).`);
         const batchPins = await db.getPinsByBatch(currentBatchId);
         totalPinsInBatch = batchPins.length;
+        
+        // Resume resolver if pending pins exist
+        const pendingCount = batchPins.filter(p => !p.videoSrc || p.videoSrc.includes('_audio')).length;
+        if (pendingCount > 0 && !isResolving) {
+          console.log(`[startup] Found ${pendingCount} unresolved pins. Resuming background resolver.`);
+          runLinkResolver().catch(console.error);
+        }
       }
     }
 
@@ -56,7 +66,7 @@ async function checkAndRunScraper() {
 
 async function runBatchScrape() {
   try {
-    console.log("[batch-scraper] Starting 24-hour batch scrape...");
+    console.log("[batch-scraper] Starting 2-hour batch scrape...");
     const pins = await scrape200Pins();
     if (pins.length === 0) {
       console.log("[batch-scraper] Scrape returned 0 pins. Aborting batch save.");
@@ -74,12 +84,139 @@ async function runBatchScrape() {
     currentBatchId = newBatchId;
     lastScrapedTime = timestamp;
     totalPinsInBatch = pins.length;
+    
+    // Start resolver automatically
+    runLinkResolver().catch(console.error);
   } catch (err) {
     console.error("[batch-scraper] Error during batch scrape:", err);
   }
 }
 
-// Check every hour if 96 hours have passed
+let isResolving = false;
+let lastResolvedAt = null;
+
+async function runLinkResolver() {
+  if (isResolving) return;
+  isResolving = true;
+  
+  console.log(`[resolver] Starting resolution for batch: ${currentBatchId}`);
+  
+  try {
+    const batchPins = await db.getPinsByBatch(currentBatchId);
+    let pendingPins = batchPins.filter(p => !p.videoSrc || p.videoSrc.includes('_audio'));
+    
+    console.log(`[resolver] Found ${pendingPins.length} pins needing resolution.`);
+    
+    let resolvedCount = batchPins.length - pendingPins.length;
+    let failedCount = batchPins.filter(p => p.resolveStatus === "failed").length;
+    let consecutiveFailures = 0;
+    
+    for (let i = 0; i < pendingPins.length; i += 5) {
+      const chunk = pendingPins.slice(i, i + 5);
+      
+      for (const pin of chunk) {
+        let details = null;
+        try {
+          try {
+            details = await fetchPinDetailsYTDLP(pin.pinUrl);
+          } catch (ytError) {
+            console.log(`[scraper] yt-dlp failed for ${pin.pinUrl}, falling back to fast browser...`);
+            details = await scrapePinDetailsFast(pin.pinUrl);
+          }
+          
+          if (details && details.needsRemux) {
+            console.log(`[resolver] Tier 1 failed for ${pin.pinUrl} — falling back to remux`);
+            const { remuxHlsToMp4 } = require('./scraper');
+            const pinId = pin.pinUrl.split("/pin/")[1]?.replace(/\//g, "");
+            const remuxResult = await remuxHlsToMp4(pinId, details.hlsUrl);
+            details.videoSrc = remuxResult.url;
+            details.videoSource = "remuxed";
+            details.resolvedQuality = "480p";
+            details.fileSizeMB = remuxResult.fileSizeMB;
+            details.qualities = [{
+              height: 480,
+              url: remuxResult.url,
+              protocol: "mp4",
+              label: "480p"
+            }];
+          }
+
+          if (details && details.videoSrc && !details.videoSrc.includes('_audio') && details.qualities && details.qualities.length > 0) {
+            await db.upsertPin({
+              ...pin,
+              videoSrc: details.videoSrc,
+              qualities: details.qualities,
+              resolvedQuality: details.resolvedQuality || "480p",
+              videoSource: details.videoSource || "direct",
+              resolveStatus: 'ready',
+              linksRefreshedAt: new Date().toISOString(),
+              fileSizeMB: details.fileSizeMB || null,
+              errorLog: null
+            });
+            resolvedCount++;
+            lastResolvedAt = new Date().toISOString();
+            consecutiveFailures = 0;
+            console.log(`[resolver] ✅ ${pin.pinUrl} — ${details.videoSource} ${details.resolvedQuality}`);
+          } else {
+            failedCount++;
+            consecutiveFailures++;
+            if (!details || !details.videoSrc) console.log('[resolver] FAIL REASON: no videoSrc');
+            else if (details.videoSrc.includes('_audio')) console.log('[resolver] FAIL REASON: audio-only URL');
+            else if (!details.qualities || !details.qualities.length) console.log('[resolver] FAIL REASON: empty qualities array');
+            
+            await db.deletePin(pin.pinUrl);
+            console.log(`[resolver] ❌ ${pin.pinUrl} deleted — no valid videoSrc`);
+          }
+        } catch (err) {
+          failedCount++;
+          consecutiveFailures++;
+          await db.deletePin(pin.pinUrl);
+          console.log(`[resolver] Pin ${pin.pinUrl} failed — deleted from DB (error: ${err.message})`);
+        }
+        
+        // Extra delay after remux (CPU intensive)
+        if (details && details.needsRemux) {
+          console.log(`[resolver] sleeping 10.0s between pins (post-remux)...`);
+          await new Promise(r => setTimeout(r, 10000));
+        } else {
+          const delayMs = Math.floor(Math.random() * 10000) + 15000;
+          console.log(`[resolver] sleeping ${(delayMs/1000).toFixed(1)}s between pins...`);
+          await new Promise(r => setTimeout(r, delayMs));
+        }
+        
+        if (consecutiveFailures >= 3) {
+          console.log('[resolver] 3 consecutive failures — pausing 10 minutes');
+          await new Promise(r => setTimeout(r, 10 * 60 * 1000));
+          consecutiveFailures = 0;
+        }
+      }
+      console.log(`[resolver] ${resolvedCount}/${batchPins.length} ready, ${failedCount} failed.`);
+      
+      // Cooldown after every 5 pins
+      if (i + 5 < pendingPins.length) {
+        console.log(`[resolver] Batch of 5 done. Cooldown for 60s...`);
+        await new Promise(r => setTimeout(r, 60 * 1000));
+      }
+    }
+    
+    console.log(`[resolver] Done. ${resolvedCount} ready, ${failedCount} failed.`);
+    
+    const MIN_READY_BEFORE_DELETE = parseInt(process.env.MIN_READY_BEFORE_DELETE || "100", 10);
+    
+    if (resolvedCount >= MIN_READY_BEFORE_DELETE) {
+      console.log(`[resolver] Threshold met (${resolvedCount}/${MIN_READY_BEFORE_DELETE}). Old batch deleted.`);
+      await db.deleteOldBatches(currentBatchId);
+    } else {
+      console.log(`[resolver] WARNING: Only ${resolvedCount} pins resolved (need ${MIN_READY_BEFORE_DELETE}). Old batch retained to prevent empty DB.`);
+    }
+  } catch (err) {
+    console.error("[resolver] Error:", err.message);
+  } finally {
+    isResolving = false;
+  }
+}
+
+// Check every hour if 2 hours have passed
 cron.schedule("0 * * * *", checkAndRunScraper);
 checkAndRunScraper();
 
@@ -445,13 +582,20 @@ app.get("/api/scrape/now", async (req, res) => {
   }
 });
 
-// GET /api/status ── 24-hour trigger status
-app.get("/api/status", (req, res) => {
+// GET /api/resolve/now
+app.get("/api/resolve/now", async (req, res) => {
+  console.log("[/api/resolve/now] Manually triggering resolver...");
+  runLinkResolver().catch(console.error);
+  res.json({ success: true, message: "Resolver started" });
+});
+
+// GET /api/status ── 2-hour trigger status
+app.get("/api/status", async (req, res) => {
   let nextScrapeIn = "Unknown";
   if (lastScrapedTime) {
     const lastScraped = new Date(lastScrapedTime);
     const msSince = Date.now() - lastScraped.getTime();
-    const msLeft = (24 * 60 * 60 * 1000) - msSince;
+    const msLeft = (2 * 60 * 60 * 1000) - msSince;
     if (msLeft > 0) {
       const hLeft = Math.floor(msLeft / (1000 * 60 * 60));
       const mLeft = Math.floor((msLeft % (1000 * 60 * 60)) / (1000 * 60));
@@ -461,11 +605,31 @@ app.get("/api/status", (req, res) => {
     }
   }
 
+  let resolvedCount = 0;
+  let failedCount = 0;
+  let pendingCount = 0;
+  
+  if (currentBatchId) {
+    try {
+      const batchPins = await db.getPinsByBatch(currentBatchId);
+      resolvedCount = batchPins.filter(p => p.resolveStatus === "ready").length;
+      failedCount = batchPins.filter(p => p.resolveStatus === "failed").length;
+      pendingCount = batchPins.filter(p => !p.videoSrc || p.videoSrc.includes('_audio')).length;
+    } catch(e) {}
+  }
+
   res.json({
     lastScraped: lastScrapedTime,
     totalPins: totalPinsInBatch,
     nextScrapeIn: nextScrapeIn,
-    currentBatchId: currentBatchId
+    currentBatchId: currentBatchId,
+    resolver: {
+      isResolving,
+      resolvedCount,
+      failedCount,
+      pendingCount,
+      lastResolvedAt
+    }
   });
 });
 

@@ -1,6 +1,11 @@
 const { chromium } = require("playwright-extra");
 const stealth = require("puppeteer-extra-plugin-stealth")();
 const { exec } = require("child_process");
+const axios = require("axios");
+const fs = require("fs");
+const path = require("path");
+const util = require("util");
+const execPromise = util.promisify(exec);
 
 chromium.use(stealth);
 
@@ -28,6 +33,9 @@ async function launchBrowser() {
       "--disable-blink-features=AutomationControlled",
       "--disable-infobars",
     ],
+    proxy: process.env.PROXY_URL ? {
+      server: process.env.PROXY_URL
+    } : undefined
   });
 }
 
@@ -231,68 +239,147 @@ async function scrapeByKeyword(keyword) {
   }
 }
 
-function fetchPinDetailsYTDLP(pinUrl) {
-  return new Promise((resolve, reject) => {
-    console.log(`[scraper] Fetching details via yt-dlp for: ${pinUrl}`);
-    exec(`yt-dlp -j "${pinUrl}"`, (error, stdout, stderr) => {
-      if (error) {
-        return reject(new Error(stderr || error.message));
-      }
-      try {
-        const info = JSON.parse(stdout);
-        let videoSrc = "";
-        
-        if (info.formats && info.formats.length > 0) {
-          const sorted = info.formats.filter(f => f.url).sort((a, b) => {
-            const aIsMp4 = a.url.includes('.mp4') || a.ext === 'mp4';
-            const bIsMp4 = b.url.includes('.mp4') || b.ext === 'mp4';
-            if (aIsMp4 && !bIsMp4) return -1;
-            if (!aIsMp4 && bIsMp4) return 1;
-            
-            const aIsM3u8 = a.url.includes('.m3u8') || a.protocol?.includes('m3u8');
-            const bIsM3u8 = b.url.includes('.m3u8') || b.protocol?.includes('m3u8');
-            if (!aIsM3u8 && bIsM3u8) return -1;
-            if (aIsM3u8 && !bIsM3u8) return 1;
+function hlsToMp4(hlsUrl) {
+  try {
+    let mp4Url = hlsUrl
+      .replace('/hls/', '/480p/')
+      .replace(/_\d+w\.m3u8$/, '.mp4')
+      .replace(/\.m3u8$/, '.mp4');
+    return mp4Url;
+  } catch (e) {
+    return null;
+  }
+}
 
-            return (b.tbr || 0) - (a.tbr || 0);
-          });
-          
-          if (sorted.length > 0) {
-            videoSrc = sorted[0].url;
-          }
-        }
-        
-        if (!videoSrc) {
-          videoSrc = info.url || "";
-        }
-
-        let uploadDate = "Recently";
-        if (info.upload_date) {
-          const y = info.upload_date.substring(0, 4);
-          const m = info.upload_date.substring(4, 6);
-          const d = info.upload_date.substring(6, 8);
-          const dateObj = new Date(`${y}-${m}-${d}`);
-          if (!isNaN(dateObj.getTime())) {
-            uploadDate = dateObj.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
-          }
-        }
-
-        resolve({
-          success: true,
-          videoSrc,
-          title: info.title || "Pinterest Video",
-          description: info.description || "",
-          author: info.uploader || "Pinterest User",
-          viewCount: info.view_count || null,
-          uploadDate,
-          thumbnail: info.thumbnail || "",
-          related: []
-        });
-      } catch (e) {
-        reject(e);
+async function validateMp4Url(url) {
+  try {
+    const response = await axios.head(url, {
+      timeout: 8000,
+      headers: {
+        'Referer': 'https://www.pinterest.com/',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
       }
     });
-  });
+    return response.status === 200 || response.status === 206;
+  } catch (e) {
+    return false;
+  }
+}
+
+async function remuxHlsToMp4(videoId, hlsUrl) {
+  const mediaDir = '/var/www/vectorsbit-pinterest/backend/media';
+  const outputPath = `${mediaDir}/${videoId}.mp4`;
+  const publicUrl = `https://vectorsbit.com/pinterest/media/${videoId}.mp4`;
+
+  const cmd = `yt-dlp -f "best[height<=480]/best[height<=360]/best" \\
+    --merge-output-format mp4 \\
+    -o "${outputPath}" \\
+    "${hlsUrl}"`;
+
+  await execPromise(cmd);
+
+  if (!fs.existsSync(outputPath)) {
+    throw new Error('Remux failed: output file not found');
+  }
+
+  const stats = fs.statSync(outputPath);
+  const fileSizeMB = (stats.size / (1024 * 1024)).toFixed(2);
+  console.log(`[remux] ${videoId} complete. Size: ${fileSizeMB}MB`);
+
+  return { url: publicUrl, fileSizeMB: parseFloat(fileSizeMB) };
+}
+
+async function fetchPinDetailsYTDLP(pinUrl) {
+  const proxyUrl = process.env.PROXY_URL;
+  console.log(`[scraper] Fetching details via yt-dlp ${proxyUrl ? '(with proxy) ' : ''}for: ${pinUrl}`);
+  const cmd = `yt-dlp -j ${proxyUrl ? `--proxy "${proxyUrl}"` : ''} "${pinUrl}"`;
+  
+  try {
+    const { stdout, stderr } = await execPromise(cmd);
+    const info = JSON.parse(stdout);
+    
+    let formats = info.formats || [];
+    formats = formats.filter(f => f.vcodec !== "none" && !f.url.includes('_audio'));
+    
+    let uploadDate = "Recently";
+    if (info.upload_date) {
+      const y = info.upload_date.substring(0, 4);
+      const m = info.upload_date.substring(4, 6);
+      const d = info.upload_date.substring(6, 8);
+      const dateObj = new Date(`${y}-${m}-${d}`);
+      if (!isNaN(dateObj.getTime())) {
+        uploadDate = dateObj.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+      }
+    }
+
+    const baseDetails = {
+      success: true,
+      title: info.title || "Pinterest Video",
+      description: info.description || "",
+      author: info.uploader || "Pinterest User",
+      viewCount: info.view_count || null,
+      uploadDate,
+      thumbnail: info.thumbnail || "",
+      related: []
+    };
+    
+    // First, check if there's a direct MP4 at ~480p
+    const directMp4s = formats.filter(f => f.ext === 'mp4' && f.protocol && f.protocol.startsWith('http') && !f.protocol.includes('m3u8'));
+    const direct480 = directMp4s.find(f => f.height === 480) || directMp4s.find(f => f.height === 360) || directMp4s.find(f => f.height === 320);
+    
+    if (direct480) {
+      return {
+        ...baseDetails,
+        videoSrc: direct480.url,
+        resolvedQuality: `${direct480.height}p`,
+        videoSource: "direct",
+        needsRemux: false,
+        qualities: [{ height: direct480.height, url: direct480.url, protocol: "mp4", label: `${direct480.height}p` }]
+      };
+    }
+    
+    // Fallback: Check HLS formats for 480p candidate
+    const hlsFormats = formats.filter(f => f.protocol && f.protocol.includes('m3u8'));
+    let bestHls = hlsFormats.find(f => f.height === 480) 
+               || hlsFormats.find(f => f.url.includes('_480w')) 
+               || hlsFormats.find(f => f.height === 360) 
+               || hlsFormats.find(f => f.url.includes('_360w'))
+               || hlsFormats.find(f => f.height === 240)
+               || hlsFormats.find(f => f.url.includes('_240w'))
+               || hlsFormats[0];
+               
+    if (!bestHls) {
+      throw new Error("No suitable formats found (no mp4 or hls)");
+    }
+    
+    // Tier 1: Try hlsToMp4 transform
+    const mp4Url = hlsToMp4(bestHls.url);
+    if (mp4Url) {
+      const isValid = await validateMp4Url(mp4Url);
+      if (isValid) {
+        return {
+          ...baseDetails,
+          videoSrc: mp4Url,
+          resolvedQuality: "480p",
+          videoSource: "direct",
+          needsRemux: false,
+          qualities: [{ height: 480, url: mp4Url, protocol: "mp4", label: "480p" }]
+        };
+      }
+    }
+    
+    // Tier 2: Transformation failed/404, need remux
+    return {
+      ...baseDetails,
+      needsRemux: true,
+      hlsUrl: bestHls.url,
+      selectedHeight: bestHls.height
+    };
+
+  } catch (error) {
+    console.log(`[yt-dlp] Error for ${pinUrl}:`, error.message);
+    throw error;
+  }
 }
 
 async function scrapePinDetails(pinUrl, contextQuery = "") {
@@ -368,6 +455,10 @@ async function scrapePinDetails(pinUrl, contextQuery = "") {
         }
         
         if (!title) title = document.querySelector('h1, [data-test-id="pinTitle"]')?.innerText || "";
+        
+        if (videoSrc && (videoSrc.includes("m3u8") || videoSrc.includes("_audio"))) {
+          videoSrc = "";
+        }
         if (!description) description = document.querySelector('[data-test-id="pin-description-text"], .p7I')?.innerText || "";
         if (!author) author = document.querySelector('[data-test-id="pinner-name"]')?.innerText || "";
 
@@ -377,6 +468,8 @@ async function scrapePinDetails(pinUrl, contextQuery = "") {
           description: description.trim(),
           author: author.trim(),
           viewCount,
+          qualities: [],
+          resolvedQuality: "",
           uploadDate: uploadDate || "Recently",
           related: []
         };
@@ -409,4 +502,79 @@ async function scrapePinDetails(pinUrl, contextQuery = "") {
   }
 }
 
-module.exports = { scrape200Pins, scrapeByKeyword, scrapePinDetails };
+async function scrapePinDetailsFast(pinUrl) {
+  const browser = await launchBrowser();
+  const { page, context } = await newStealthPage(browser);
+
+  try {
+    console.log(`[scraper] [browser-fallback-fast] Fetching details for: ${pinUrl}`);
+    await page.goto(pinUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
+    await page.evaluate(() => window.scrollBy(0, 1500));
+    await page.waitForTimeout(3000);
+
+    const details = await page.evaluate(() => {
+      let videoSrc = "";
+      let title = "";
+      let description = "";
+      let author = "";
+      let uploadDate = "";
+      let viewCount = null;
+
+      // Try JSON-LD
+      const jsonLdScripts = document.querySelectorAll('script[type="application/ld+json"]');
+      jsonLdScripts.forEach(script => {
+        try {
+          const data = JSON.parse(script.innerText);
+          const root = Array.isArray(data) ? data[0] : data;
+          
+          if (root["@type"] === "VideoObject" || root.video) {
+            const video = root.video || root;
+            videoSrc = video.contentUrl || video.embedUrl || videoSrc;
+            uploadDate = video.uploadDate || video.datePublished || video.dateCreated || uploadDate;
+            title = root.name || title;
+            description = root.description || description;
+            author = root.author?.name || author;
+          }
+        } catch (e) {}
+      });
+
+      if (!videoSrc) {
+        const videoEl = document.querySelector("video");
+        videoSrc = videoEl?.src || videoEl?.querySelector("source")?.src || "";
+      }
+      
+      if (!title) title = document.querySelector('h1, [data-test-id="pinTitle"]')?.innerText || "";
+      
+      if (videoSrc && (videoSrc.includes("m3u8") || videoSrc.includes("_audio"))) {
+        videoSrc = "";
+      }
+      if (!description) description = document.querySelector('[data-test-id="pin-description-text"], .p7I')?.innerText || "";
+      if (!author) author = document.querySelector('[data-test-id="pinner-name"]')?.innerText || "";
+
+      return {
+        videoSrc,
+        title: title.trim(),
+        description: description.trim(),
+        author: author.trim(),
+        viewCount,
+        qualities: [],
+        resolvedQuality: "",
+        uploadDate: uploadDate || "Recently",
+        related: []
+      };
+    });
+
+    console.log('[browser-fast] Found videoSrc:', details.videoSrc);
+    console.log('[browser-fast] Qualities found:', details.qualities?.length);
+
+    return { success: true, ...details };
+  } catch (err) {
+    console.error(`[scraper] Fast browser fallback failed: ${err.message}`);
+    return { success: false, error: err.message };
+  } finally {
+    await context.close();
+    await browser.close();
+  }
+}
+
+module.exports = { scrape200Pins, scrapeByKeyword, scrapePinDetails, scrapePinDetailsFast, fetchPinDetailsYTDLP, remuxHlsToMp4 };

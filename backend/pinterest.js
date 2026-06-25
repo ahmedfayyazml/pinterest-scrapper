@@ -110,16 +110,37 @@ async function fetchViaAPI(resourceName, options, sourceUrl, retries = 3) {
   const data = JSON.stringify({ options });
   const url = `https://www.pinterest.com/resource/${resourceName}/get/?source_url=${encodeURIComponent(sourceUrl)}&data=${encodeURIComponent(data)}&_=${Date.now()}`;
 
+  const axiosOptions = {
+    headers: {
+      ...buildHeaders(currentUA),
+      "Cookie": sessionCookies,
+      ...(csrfToken ? { "X-CSRFToken": csrfToken } : {}),
+    },
+    timeout: 15000,
+  };
+
+  if (process.env.PROXY_URL) {
+    try {
+      const parsed = new URL(process.env.PROXY_URL);
+      axiosOptions.proxy = {
+        protocol: parsed.protocol.replace(":", ""),
+        host: parsed.hostname,
+        port: parseInt(parsed.port, 10),
+      };
+      if (parsed.username) {
+        axiosOptions.proxy.auth = {
+          username: decodeURIComponent(parsed.username),
+          password: decodeURIComponent(parsed.password)
+        };
+      }
+    } catch (err) {
+      console.warn("[pinterest] Failed to parse PROXY_URL for axios:", err.message);
+    }
+  }
+
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
-      const res = await axios.get(url, {
-        headers: {
-          ...buildHeaders(currentUA),
-          "Cookie": sessionCookies,
-          ...(csrfToken ? { "X-CSRFToken": csrfToken } : {}),
-        },
-        timeout: 15000,
-      });
+      const res = await axios.get(url, axiosOptions);
       if (res.status === 200) return res.data;
     } catch (err) {
       const status = err.response?.status;
@@ -191,6 +212,7 @@ async function fetchViaBrowser(query) {
         "--disable-dev-shm-usage", // Prevent /dev/shm crashes in Docker/low-mem
         "--window-size=1920,1080",
       ],
+      proxy: process.env.PROXY_URL ? { server: process.env.PROXY_URL } : undefined
     });
 
     const ua = randomUA();

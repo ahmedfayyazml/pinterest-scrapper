@@ -1,4 +1,6 @@
 const { db: firestoreDb } = require("./firebase");
+const fs = require("fs");
+const path = require("path");
 
 console.log("Database Layer: Running in Pure Firestore Mode 🌐");
 
@@ -11,6 +13,16 @@ async function upsertPin(pin) {
     await firestoreDb.collection("pins").doc(docId).set(pin, { merge: true });
   } catch (error) {
     console.error("Firestore upsert failed:", error.message);
+  }
+}
+
+async function deletePin(pinUrl) {
+  try {
+    if (!pinUrl) return;
+    const docId = Buffer.from(pinUrl).toString('base64');
+    await firestoreDb.collection("pins").doc(docId).delete();
+  } catch (error) {
+    console.error("Firestore deletePin failed:", error.message);
   }
 }
 
@@ -98,34 +110,106 @@ async function saveBatchPins(pins, newBatchId, timestamp) {
     if (opCount > 0) {
       await batch.commit();
     }
-    
-    // Delete old (older than 96 hours)
-    console.log(`[db] Deleting Firestore pins older than 96 hours (cutoff: ${cutoffTime})...`);
-    const oldDocsQuery = await firestoreDb.collection("pins").where("scrapedAt", "<", cutoffTime).get();
-    batch = firestoreDb.batch();
-    opCount = 0;
-    oldDocsQuery.forEach(doc => {
-      batch.delete(doc.ref);
-      opCount++;
-      if (opCount === 500) {
-        batch.commit();
-        batch = firestoreDb.batch();
-        opCount = 0;
-      }
-    });
-    if (opCount > 0) {
-      await batch.commit();
-    }
   } catch (error) {
     console.error("Firestore saveBatchPins failed:", error.message);
   }
 }
 
+async function deleteOldBatches(currentBatchId) {
+  const cutoffTime = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+  
+  try {
+    const allPins = await firestoreDb.collection("pins").get();
+    let batch = firestoreDb.batch();
+    let opCount = 0;
+    
+    let currentBatchPins = [];
+
+    allPins.forEach(doc => {
+      const data = doc.data();
+      const isOldBatch = data.batchId && data.batchId !== currentBatchId;
+      const isOlderThan48h = data.scrapedAt && data.scrapedAt < cutoffTime;
+      
+      if (isOldBatch || isOlderThan48h) {
+        batch.delete(doc.ref);
+        opCount++;
+        if (opCount === 500) {
+          batch.commit();
+          batch = firestoreDb.batch();
+          opCount = 0;
+        }
+      } else if (data.batchId === currentBatchId) {
+        currentBatchPins.push(data);
+      }
+    });
+    
+    if (opCount > 0) {
+      await batch.commit();
+    }
+
+    const mediaDir = '/var/www/vectorsbit-pinterest/backend/media';
+    if (fs.existsSync(mediaDir)) {
+      const files = fs.readdirSync(mediaDir);
+      const currentPinIds = new Set(currentBatchPins.map(p => {
+        return p.pinId || p.pinUrl?.split("/pin/")[1]?.replace(/\//g, "") || "";
+      }));
+      let deletedFiles = 0;
+      files.forEach(file => {
+        const pinId = file.replace('.mp4', '');
+        if (!currentPinIds.has(pinId)) {
+          fs.unlinkSync(path.join(mediaDir, file));
+          deletedFiles++;
+        }
+      });
+      console.log(`[cleanup] Deleted ${deletedFiles} old media files`);
+    }
+
+  } catch (error) {
+    console.error("Firestore deleteOldBatches failed:", error.message);
+  }
+}
+
+async function resetFailedPins() {
+  try {
+    const batchQuery = await firestoreDb.collection("pins").orderBy("scrapedAt", "desc").limit(1).get();
+    if (batchQuery.empty) return 0;
+    
+    const currentBatchId = batchQuery.docs[0].data().batchId;
+    const snapshot = await firestoreDb.collection("pins")
+      .where("batchId", "==", currentBatchId)
+      .where("resolveStatus", "==", "failed")
+      .get();
+      
+    if (snapshot.empty) return 0;
+    
+    let batch = firestoreDb.batch();
+    let count = 0;
+    
+    snapshot.forEach(doc => {
+      batch.update(doc.ref, {
+        resolveStatus: null,
+        errorLog: null,
+        videoSrc: null
+      });
+      count++;
+    });
+    
+    await batch.commit();
+    return count;
+  } catch (error) {
+    console.error("Firestore resetFailedPins failed:", error.message);
+    return 0;
+  }
+}
+
 module.exports = {
   upsertPin,
+  deletePin,
   getAllPins,
   searchPins,
   getLatestPin,
   getPinsByBatch,
-  saveBatchPins
+  saveBatchPins,
+  deleteOldBatches,
+  resetFailedPins
 };
